@@ -1,1 +1,1 @@
-Lossy Data Compression for Distributed Acoustic Sensing (CompDAS)
+Lossy Data Compression for Distributed Acoustic Sensing (Compas)
