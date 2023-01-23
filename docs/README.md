@@ -1,1 +1,1 @@
-Lossy Data Compression for Distributed Acoustic Sensing (Compas)
+Lossy Data Compression for Distributed Acoustic Sensing (Compass)
