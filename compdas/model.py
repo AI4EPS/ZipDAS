@@ -173,8 +173,8 @@ class BLS2017Model(tf.keras.Model):
     num_pixels = tf.cast(tf.reduce_prod(tf.shape(x)[:-1]), bits.dtype)
     bpp = tf.reduce_sum(bits) / num_pixels
     # Mean squared error across pixels.
-    mse = tf.reduce_mean(tf.math.squared_difference(x, x_hat))
-    # mse = tf.reduce_mean(tf.abs(x - x_hat))
+    # mse = tf.reduce_mean(tf.math.squared_difference(x, x_hat))
+    mse = tf.reduce_mean(tf.abs(x - x_hat))
     mse = tf.cast(mse, bpp.dtype)
     # The rate-distortion Lagrangian.
     loss = bpp + self.lmbda * mse
