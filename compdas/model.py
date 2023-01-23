@@ -41,7 +41,7 @@ import tensorflow_datasets as tfds
 import numpy as np
 import matplotlib.pyplot as plt
 
-def read_png(filename):
+def read_data(filename):
   """Loads a PNG image file."""
 
   if isinstance(filename, tf.Tensor):
@@ -65,7 +65,7 @@ def read_png(filename):
   return data[:, :, np.newaxis]
 
 
-def write_png(filename, image):
+def write_data(filename, image):
   """Saves an image to a PNG file."""
   # string = tf.image.encode_png(image)
   # tf.io.write_file(filename, string)
@@ -82,40 +82,72 @@ class AnalysisTransform(tf.keras.Sequential):
 
   def __init__(self, num_filters):
     super().__init__(name="analysis")
-    # self.add(tf.keras.layers.Lambda(lambda x: x / 255.))
+
+    # self.add(tfc.SignalConv2D(
+    #     num_filters, (9, 9), name="layer_0", corr=True, strides_down=4,
+    #     padding="same_zeros", use_bias=True,
+    #     activation=tfc.GDN(name="gdn_0")))
+    # self.add(tfc.SignalConv2D(
+    #     num_filters, (5, 5), name="layer_1", corr=True, strides_down=2,
+    #     padding="same_zeros", use_bias=True,
+    #     activation=tfc.GDN(name="gdn_1")))
+    # self.add(tfc.SignalConv2D(
+    #     num_filters, (5, 5), name="layer_2", corr=True, strides_down=2,
+    #     padding="same_zeros", use_bias=False,
+    #     activation=None))
+
     self.add(tfc.SignalConv2D(
-        num_filters, (9, 9), name="layer_0", corr=True, strides_down=4,
+        num_filters//8, (7, 7), name="layer_0", corr=True, strides_down=(4,4),
         padding="same_zeros", use_bias=True,
         activation=tfc.GDN(name="gdn_0")))
     self.add(tfc.SignalConv2D(
-        num_filters, (5, 5), name="layer_1", corr=True, strides_down=2,
+        num_filters//4, (3, 3), name="layer_1", corr=True, strides_down=(2,2),
         padding="same_zeros", use_bias=True,
         activation=tfc.GDN(name="gdn_1")))
     self.add(tfc.SignalConv2D(
-        num_filters, (5, 5), name="layer_2", corr=True, strides_down=2,
+        num_filters//2, (3, 3), name="layer_2", corr=True, strides_down=(2,2),
+        padding="same_zeros", use_bias=True,
+        activation=tfc.GDN(name="gdn_2")))
+    self.add(tfc.SignalConv2D(
+        num_filters, (3, 3), name="layer_3", corr=True, strides_down=(2,2),
         padding="same_zeros", use_bias=False,
         activation=None))
-
 
 class SynthesisTransform(tf.keras.Sequential):
   """The synthesis transform."""
 
   def __init__(self, num_filters):
     super().__init__(name="synthesis")
+
+    # self.add(tfc.SignalConv2D(
+    #     num_filters, (5, 5), name="layer_0", corr=False, strides_up=2,
+    #     padding="same_zeros", use_bias=True,
+    #     activation=tfc.GDN(name="igdn_0", inverse=True)))
+    # self.add(tfc.SignalConv2D(
+    #     num_filters, (5, 5), name="layer_1", corr=False, strides_up=2,
+    #     padding="same_zeros", use_bias=True,
+    #     activation=tfc.GDN(name="igdn_1", inverse=True)))
+    # self.add(tfc.SignalConv2D(
+    #     1, (9, 9), name="layer_2", corr=False, strides_up=4,
+    #     padding="same_zeros", use_bias=True,
+    #     activation=None))
+
     self.add(tfc.SignalConv2D(
-        num_filters, (5, 5), name="layer_0", corr=False, strides_up=2,
+        num_filters, (3, 3), name="layer_3", corr=False, strides_up=(2,2),
         padding="same_zeros", use_bias=True,
-        activation=tfc.GDN(name="igdn_0", inverse=True)))
+        activation=tfc.GDN(name="igdn_3", inverse=True)))
     self.add(tfc.SignalConv2D(
-        num_filters, (5, 5), name="layer_1", corr=False, strides_up=2,
+        num_filters//2, (3, 3), name="layer_2", corr=False, strides_up=(2,2),
+        padding="same_zeros", use_bias=True,
+        activation=tfc.GDN(name="igdn_2", inverse=True)))
+    self.add(tfc.SignalConv2D(
+        num_filters//4, (3, 3), name="layer_1", corr=False, strides_up=(2,2),
         padding="same_zeros", use_bias=True,
         activation=tfc.GDN(name="igdn_1", inverse=True)))
     self.add(tfc.SignalConv2D(
-        1, (9, 9), name="layer_2", corr=False, strides_up=4,
-        padding="same_zeros", use_bias=True,
+        1, (7, 7), name="layer_0", corr=False, strides_up=(4,4),
+        padding="same_zeros", use_bias=False,
         activation=None))
-    # self.add(tf.keras.layers.Lambda(lambda x: x * 255.))
-
 
 class BLS2017Model(tf.keras.Model):
   """Main model class."""
@@ -136,11 +168,13 @@ class BLS2017Model(tf.keras.Model):
     y = self.analysis_transform(x)
     y_hat, bits = entropy_model(y, training=training)
     x_hat = self.synthesis_transform(y_hat)
+    # x_hat = self.synthesis_transform(y)
     # Total number of bits divided by total number of pixels.
     num_pixels = tf.cast(tf.reduce_prod(tf.shape(x)[:-1]), bits.dtype)
     bpp = tf.reduce_sum(bits) / num_pixels
     # Mean squared error across pixels.
     mse = tf.reduce_mean(tf.math.squared_difference(x, x_hat))
+    # mse = tf.reduce_mean(tf.abs(x - x_hat))
     mse = tf.cast(mse, bpp.dtype)
     # The rate-distortion Lagrangian.
     loss = bpp + self.lmbda * mse
@@ -255,7 +289,7 @@ def get_custom_dataset(split, args):
     dataset = dataset.map(
         lambda x: crop_image(
           # read_png(x),
-          tf.py_function(read_png, [x], tf.float32),
+          tf.py_function(read_data, [x], tf.float32),
           args.patchsize),
         # lambda x: crop_image(read_png(x), args.patchsize),
         num_parallel_calls=args.preprocess_threads)
@@ -305,8 +339,8 @@ def compress(args):
   """Compresses an image."""
   # Load model and use it to compress the image.
   model = tf.keras.models.load_model(args.model_path)
-  x = read_png(args.input_file)
-  write_png(args.input_file+".png", x)
+  x = read_data(args.input_file)
+  write_data(args.input_file+".png", x)
   tensors = model.compress(x)
 
   # Write a binary file with the shape information and the compressed string.
@@ -318,12 +352,13 @@ def compress(args):
   # If requested, decompress the image and measure performance.
   if args.verbose:
     x_hat = model.decompress(*tensors)
-    write_png(args.input_file+"_verbose.png", x_hat)
+    write_data(args.input_file+"_verbose.png", x_hat)
 
     # Cast to float in order to compute metrics.
     x = tf.cast(x, tf.float32)
     x_hat = tf.cast(x_hat, tf.float32)
-    mse = tf.reduce_mean(tf.math.squared_difference(x, x_hat))
+    # mse = tf.reduce_mean(tf.math.squared_difference(x, x_hat))
+    mse = tf.reduce_mean(tf.abs(x - x_hat))
     psnr = tf.squeeze(tf.image.psnr(x, x_hat, 255))
     msssim = tf.squeeze(tf.image.ssim_multiscale(x, x_hat, 255))
     msssim_db = -10. * tf.math.log(1 - msssim) / tf.math.log(10.)
@@ -353,7 +388,7 @@ def decompress(args):
   x_hat = model.decompress(*tensors)
 
   # Write reconstructed image out as a PNG file.
-  write_png(args.output_file, x_hat)
+  write_data(args.output_file, x_hat)
 
 
 def parse_args(argv):
