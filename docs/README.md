@@ -2,7 +2,7 @@
 
 ## Compression
 ```
-python run.py --model_path bls2017 --mode compressed --data_path data --result_path compressed --plot_figure
+python run.py --model_path bls2017 --mode compressed --data_path data --format h5 --result_path compressed --plot_figure
 ```
 
 ## Decompression
