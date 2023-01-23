@@ -1,44 +1,43 @@
 import argparse
 import glob
-import sys
-from absl import app
-from absl.flags import argparse_flags
+from functools import partial
+
+import matplotlib.pyplot as plt
+import numpy as np
 import tensorflow as tf
 import tensorflow_compression as tfc
-import numpy as np
-import matplotlib.pyplot as plt
-from functools import partial
-from compdas.model import *
+from tqdm import tqdm
+
 from compdas.data import *
+from compdas.model import *
 
 
 def parse_args():
     """Parses command line arguments."""
-    parser = argparse_flags.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     # High-level options.
+    parser.add_argument("--mode", type=str, default="train", help="train")
     parser.add_argument("--model_path", default="model", help="Path where to save/load the trained model.")
-    parser.add_argument("--lambda", type=float, default=100, dest="lmbda", help="Lambda for rate-distortion tradeoff.")
-    parser.add_argument(
-        "--train_glob",
-        type=str,
-        default=None,
-        help="Glob pattern identifying custom training data. This pattern must "
-        "expand to a list of RGB images in PNG format. If unspecified, the "
-        "CLIC dataset from TensorFlow Datasets is used.",
-    )
+    parser.add_argument("--lambda", type=float, default=10.0, dest="lmbda", help="Lambda for rate-distortion tradeoff.")
     parser.add_argument("--num_filters", type=int, default=128, help="Number of filters per layer.")
+
+    parser.add_argument("--data_path", type=str, default="data", help="data path")
+    parser.add_argument("--result_path", type=str, default="results", help="result path")
+    parser.add_argument("--format", type=str, default="h5", help="data format")
+    parser.add_argument("--nx", type=int, default=512, help="path size for height (spatial axis)")
+    parser.add_argument("--nt", type=int, default=512, help="path size for width (temporal axis)")
+
     parser.add_argument(
         "--log_path",
-        default="/tmp/train_bls2017",
+        default="logs",
         help="Path where to log training metrics for TensorBoard and back up " "intermediate model checkpoints.",
     )
-    parser.add_argument("--batchsize", type=int, default=8, help="Batch size for training and validation.")
-    parser.add_argument("--patchsize", type=int, default=256, help="Size of image patches for training and validation.")
+    parser.add_argument("--batch", type=int, default=8, help="Batch size for training and validation.")
     parser.add_argument(
         "--epochs",
         type=int,
-        default=20,
+        default=100,
         help="Train up to this number of epochs. (One epoch is here defined as "
         "the number of steps given by --steps_per_epoch, not iterations "
         "over the full training dataset.)",
@@ -49,15 +48,9 @@ def parse_args():
     parser.add_argument(
         "--max_validation_steps",
         type=int,
-        default=256,
+        default=64,
         help="Maximum number of batches to use for validation. If -1, use one "
         "patch from each image in the training set.",
-    )
-    parser.add_argument(
-        "--preprocess_threads",
-        type=int,
-        default=16,
-        help="Number of CPU threads to use for parallel decoding of training " "images.",
     )
     parser.add_argument(
         "--precision_policy", type=str, default=None, help="Policy for `tf.keras.mixed_precision` training."
@@ -66,102 +59,125 @@ def parse_args():
         "--check_numerics", action="store_true", help="Enable TF support for catching NaN and Inf in tensors."
     )
 
-    parser.add_argument("--data_path", type=str, default="data", help="data path")
-    parser.add_argument("--result_path", type=str, default="compressed", help="result path")
-    parser.add_argument("--format", type=str, default="h5", help="data format")
-    parser.add_argument("--nx", type=int, default=256, help="number of pixels in x direction")
-    parser.add_argument("--nt", type=int, default=256, help="number of pixels in t direction")
     args = parser.parse_args()
     return args
 
 
-def write_data(filename, image):
-    """Saves an image to a PNG file."""
-
-    if isinstance(image, tf.Tensor):
-        image = image.numpy()
-    plt.figure()
-    plt.imshow(image[:, :, 0].T, vmin=-1.5, vmax=1.5, cmap="seismic")
-    plt.colorbar()
-    plt.savefig(filename)
-
-
-def check_image_size(image, patchsize):
-    shape = tf.shape(image)
-    return shape[0] >= patchsize and shape[1] >= patchsize and shape[-1] == 3
-
-
-def crop_image(image, patchsize):
-    image = tf.image.random_crop(image, (patchsize, patchsize, 1))
-    return tf.cast(image, tf.keras.mixed_precision.global_policy().compute_dtype)
-
-
 def gen_dataset(args):
-    files = sorted(list(glob(args.data_path + "/*." + args.format)))
+
+    files = sorted(list(glob.glob(args.data_path + "/*." + args.format)))
     if not files:
-        raise RuntimeError(f"No training images found with glob " f"'{args.train_glob}'.")
+        raise RuntimeError(f"No training images found with glob " f"'{args.data_path}'.")
     for filename in files:
-        data = read_hdf5(filename)
+        data = read_hdf5(args, filename)
         data = torch.permute(data, (1, 2, 0))
         h, w, nc = data.shape  # nx, nt, nc
-        for i in np.random.randint(0, h - args.nx, h // args.nx):
-            for j in np.random.randint(0, w - args.nt, w // args.nt):
+        if args.mode == "train":
+            ih = np.random.randint(0, h - args.nx, h // args.nx * 50)
+            iw = np.random.randint(0, w - args.nt, w // args.nt * 50)
+        else:
+            ih = np.arange(0, h - args.nx, args.nx)
+            iw = np.arange(0, w - args.nt, args.nt)
+        for i in ih:
+            for j in iw:
                 patch = tf.convert_to_tensor(data[i : i + args.nx, j : j + args.nt, :], dtype=tf.float32)
                 yield tf.cast(patch, tf.keras.mixed_precision.global_policy().compute_dtype)
 
 
 def data_loader(args, split="train"):
-    """Creates input data pipeline from custom PNG images."""
     with tf.device("/cpu:0"):
         dataset = tf.data.Dataset.from_generator(
             partial(gen_dataset, args=args), output_signature=tf.TensorSpec(shape=(None, None, 1), dtype=tf.float32)
         )
         if split == "train":
             dataset = dataset.repeat()
-        dataset = dataset.batch(args.batchsize)
+        if args.batch > 0:
+            dataset = dataset.batch(args.batch)
     return dataset
 
 
-def compress(args):
-    """Compresses an image."""
-    # Load model and use it to compress the image.
-    model = tf.keras.models.load_model(args.model_path)
-    x = read_data(args.input_file)
-    write_data(args.input_file + ".png", x)
-    tensors = model.compress(x)
+def plot_data(args, filename, data_true, data_hat):
 
-    # Write a binary file with the shape information and the compressed string.
-    packed = tfc.PackedTensors()
-    packed.pack(tensors)
-    with open(args.output_file, "wb") as f:
-        f.write(packed.string)
+    if isinstance(data_true, tf.Tensor):
+        data_true = data_true.numpy()
+    if isinstance(data_hat, tf.Tensor):
+        data_hat = data_hat.numpy()
 
-    # If requested, decompress the image and measure performance.
-    if args.verbose:
+    plt.clf()
+    fig, axes = plt.subplots(
+        2,
+        1,
+        figsize=(6 * args.nt / args.nx, 4),
+        sharex=True,
+        sharey=False,
+        squeeze=False,
+        gridspec_kw={"wspace": 0, "hspace": 0},
+    )
+    axes[0, 0].imshow(data_true[:, :, 0], vmin=-1.5, vmax=1.5, cmap="seismic")
+    axes[1, 0].imshow(data_hat[:, :, 0], vmin=-1.5, vmax=1.5, cmap="seismic")
+    fig.subplots_adjust(wspace=None, hspace=None)
+    fig.savefig(filename, dpi=300, bbox_inches="tight")
+
+
+def test(args):
+    if not os.path.exists(args.result_path):
+        os.makedirs(args.result_path)
+    if not os.path.exists(args.result_path + "/figures"):
+        os.makedirs(args.result_path + "/figures")
+
+    print(f"Loading model from: {args.model_path}")
+    try:
+        model = tf.keras.models.load_model(args.model_path)
+    except:
+        model = BLS2017Model(args.lmbda, args.num_filters)
+        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
+        checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=model)
+        status = checkpoint.restore(tf.train.latest_checkpoint(args.model_path))
+        print(f"Restored from checkpoint {args.model_path}: {status}")
+    test_dataset = data_loader(args, "test")
+
+    for i, x in enumerate(test_dataset):
+
+        tensors = model.compress(x)
+
+        # # Write a binary file with the shape information and the compressed string.
+        packed = tfc.PackedTensors()
+        packed.pack(tensors)
+        # with open(args.output_file, "wb") as f:
+        #     f.write(packed.string)
+
         x_hat = model.decompress(*tensors)
-        write_data(args.input_file + "_verbose.png", x_hat)
+
+        plot_data(args, args.result_path + f"/figures/{i:04d}.png", x, x_hat)
 
         # Cast to float in order to compute metrics.
         x = tf.cast(x, tf.float32)
         x_hat = tf.cast(x_hat, tf.float32)
         mse = tf.reduce_mean(tf.math.squared_difference(x, x_hat))
-        psnr = tf.squeeze(tf.image.psnr(x, x_hat, 255))
-        msssim = tf.squeeze(tf.image.ssim_multiscale(x, x_hat, 255))
+        psnr = tf.squeeze(tf.image.psnr(x, x_hat, 3))
+        msssim = tf.squeeze(tf.image.ssim_multiscale(x, x_hat, 3))
         msssim_db = -10.0 * tf.math.log(1 - msssim) / tf.math.log(10.0)
 
         # The actual bits per pixel including entropy coding overhead.
         num_pixels = tf.reduce_prod(tf.shape(x)[:-1])
         bpp = len(packed.string) * 8 / num_pixels
 
+        print("----------------------------------------")
         print(f"Mean squared error: {mse:0.4f}")
+        print(f"Bits per pixel: {bpp:0.4f}")
         print(f"PSNR (dB): {psnr:0.2f}")
         print(f"Multiscale SSIM: {msssim:0.4f}")
         print(f"Multiscale SSIM (dB): {msssim_db:0.2f}")
-        print(f"Bits per pixel: {bpp:0.4f}")
 
 
-def main(args):
+def train(args):
     """Instantiates and trains the model."""
+
+    if not os.path.exists(args.model_path):
+        os.makedirs(args.model_path)
+    if not os.path.exists(args.model_path + "/checkpoint"):
+        os.makedirs(args.model_path + "/checkpoint")
+
     if args.precision_policy:
         tf.keras.mixed_precision.set_global_policy(args.precision_policy)
     if args.check_numerics:
@@ -176,6 +192,9 @@ def main(args):
     validation_dataset = data_loader(args, "validation")
     validation_dataset = validation_dataset.take(args.max_validation_steps)
 
+    class CustomCallback(tf.keras.callbacks.Callback):
+        pass
+
     model.fit(
         train_dataset.prefetch(8),
         epochs=args.epochs,
@@ -183,17 +202,34 @@ def main(args):
         validation_data=validation_dataset.cache(),
         validation_freq=1,
         callbacks=[
+            # CustomCallback(),
             tf.keras.callbacks.TerminateOnNaN(),
             tf.keras.callbacks.TensorBoard(log_dir=args.log_path, histogram_freq=1, update_freq="epoch"),
             tf.keras.callbacks.BackupAndRestore(args.log_path),
+            # tf.keras.callbacks.ModelCheckpoint(
+            #     args.model_path + "/checkpoint/variables",
+            #     monitor="val_mse",
+            #     save_best_only=False,
+            #     save_weights_only=False,
+            #     verbose=1,
+            # ),
         ],
-        # verbose=int(args.verbose),
         verbose=1,
     )
+
+    print(f"Training complete. Saving model to {args.model_path}.")
     model.save(args.model_path)
+
+
+def main(args):
+    if args.mode == "train":
+        train(args)
+    elif args.mode == "test":
+        test(args)
+    else:
+        raise ValueError(f"Unknown command {args.command}.")
 
 
 if __name__ == "__main__":
     args = parse_args()
     main(args)
-    # app.run(main, flags_parser=args)

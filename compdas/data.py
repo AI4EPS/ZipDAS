@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 
 
-def read_hdf5(filename):
+def read_hdf5(args, filename, nx=256, nt=256):
     """Loads a hdf5 file."""
 
     with h5py.File(filename, "r") as f:
@@ -21,8 +21,8 @@ def read_hdf5(filename):
         data = data - torch.median(data, dim=0, keepdim=True)[0]
         data = data - torch.median(data, dim=-1, keepdim=True)[0]
 
-        filter_height, filter_width = 256, 256
-        stride_height, stride_width = 256, 256
+        filter_height, filter_width = nx, nt
+        stride_height, stride_width = filter_height, filter_width
         in_height, in_width = data.shape
         out_height = math.ceil(in_height / stride_height)
         out_width = math.ceil(in_width / stride_width)
@@ -38,11 +38,13 @@ def read_hdf5(filename):
 
         data = data.unsqueeze(0).unsqueeze(0)  # nb, nc, h, w
         data = F.pad(data, (0, pad_along_width, 0, pad_along_height), mode="reflect")
-        avg = F.avg_pool2d(torch.abs(data), kernel_size=256, stride=256)
+        avg = F.avg_pool2d(torch.abs(data), kernel_size=(nx, nt), stride=(nx, nt))
         # avg = F.avg_pool2d(data**2, kernel_size=256, stride=256)
         # avg = torch.sqrt(avg)
-        avg = F.upsample(avg, scale_factor=256, align_corners=False, mode="bilinear")
+        avg = F.interpolate(avg, scale_factor=(nx, nt), align_corners=False, mode="bilinear")
         data = data / avg
+
+        data = torch.sign(data) * torch.log(torch.abs(data) + 1.0)
 
         # return data[0, :, 0:in_height, 0:in_width]
         return data[0, ...]
@@ -51,8 +53,9 @@ def read_hdf5(filename):
 def load_data(args):
 
     files = sorted(list(glob(args.data_path + "/*." + args.format)))
+    print(f"Found {len(files)} files in {args.data_path + '/*.' + args.format}.")
     for filename in files:
-        data = read_hdf5(filename)
+        data = read_hdf5(args, filename)
         yield filename, data
 
     # dataset = tf.data.Dataset.from_tensor_slices(files)

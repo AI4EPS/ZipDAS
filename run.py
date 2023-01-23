@@ -50,7 +50,7 @@ def main(args):
     if not os.path.exists(args.result_path):
         os.makedirs(args.result_path)
     if args.plot_figure:
-        figure_path = os.path.join(args.result_path, "figure")
+        figure_path = os.path.join(args.result_path, "figures")
         if not os.path.exists(figure_path):
             os.makedirs(figure_path)
         args.figure_path = figure_path
