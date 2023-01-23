@@ -1,16 +1,21 @@
-from bls2017_das import decompress
+import argparse
+import math
+import os
 from glob import glob
+from io import BytesIO
+from urllib.request import urlopen
+from zipfile import ZipFile
+
 import h5py
+import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 import tensorflow_compression as tfc
-import argparse
-import os
-import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
-import math
 from tqdm import tqdm
+
+from compdas.data import *
 
 
 def parse_args():
@@ -28,67 +33,6 @@ def parse_args():
     return args
 
 
-def read_hdf5(filename):
-    """Loads a hdf5 file."""
-
-    if isinstance(filename, tf.Tensor):
-        filename = filename.numpy().decode("utf-8")
-
-    with h5py.File(filename, "r") as f:
-
-        data = f["Data"][:]  # (nc, nt)
-
-        data = np.gradient(data, axis=-1)
-        data = torch.from_numpy(data).float()
-
-        data = data - torch.median(data, dim=0, keepdim=True)[0]
-        data = data - torch.median(data, dim=-1, keepdim=True)[0]
-
-        filter_height, filter_width = 256, 256
-        stride_height, stride_width = 256, 256
-        in_height, in_width = data.shape
-        out_height = math.ceil(in_height / stride_height)
-        out_width = math.ceil(in_width / stride_width)
-
-        if in_height % stride_height == 0:
-            pad_along_height = max(filter_height - stride_height, 0)
-        else:
-            pad_along_height = max(filter_height - (in_height % stride_height), 0)
-        if in_width % stride_width == 0:
-            pad_along_width = max(filter_width - stride_width, 0)
-        else:
-            pad_along_width = max(filter_width - (in_width % stride_width), 0)
-
-        data = data.unsqueeze(0).unsqueeze(0)  # nb, nc, h, w
-        data = F.pad(data, (0, pad_along_width, 0, pad_along_height), mode="reflect")
-        avg = F.avg_pool2d(torch.abs(data), kernel_size=256, stride=256)
-        # avg = F.avg_pool2d(data**2, kernel_size=256, stride=256)
-        # avg = torch.sqrt(avg)
-        avg = F.upsample(avg, scale_factor=256, align_corners=False, mode="bilinear")
-        data = data / avg
-
-        # return data[0, :, 0:in_height, 0:in_width]
-        return data[0, ...]
-
-
-def load_data(args):
-
-    files = sorted(list(glob(args.data_path + "/*." + args.format)))
-    for filename in files:
-        data = read_hdf5(filename)
-        yield filename, data
-
-    # dataset = tf.data.Dataset.from_tensor_slices(files)
-    # dataset = dataset.map(lambda x: tf.py_function(read_hdf5, [x], [tf.string, tf.float32]), num_parallel_calls=args.workers)
-    # dataset = dataset.batch(args.batch, drop_remainder=False)
-
-
-def write_data(args, filename, data):
-
-    with h5py.File(os.path.join(args.result_path, filename.split("/")[-1] + ".h5"), "w") as f:
-        f.create_dataset("Data", data=data.numpy())
-
-
 def plot_result(args, filename, data):
 
     plt.clf()
@@ -96,17 +40,40 @@ def plot_result(args, filename, data):
     plt.savefig(filename, dpi=300)
 
 
-def compress(args):
+def download_and_unzip(url, extract_to="./model"):
+    http_response = urlopen(url)
+    zipfile = ZipFile(BytesIO(http_response.read()))
+    zipfile.extractall(path=extract_to)
 
+
+def main(args):
     if not os.path.exists(args.result_path):
         os.makedirs(args.result_path)
     if args.plot_figure:
         figure_path = os.path.join(args.result_path, "figure")
         if not os.path.exists(figure_path):
             os.makedirs(figure_path)
+        args.figure_path = figure_path
+
+    if not os.path.exists(args.model_path):
+        model_url = "https://github.com/AI4EPS/models/releases/download/CompDAS-v1/model.zip"
+        download_and_unzip(args.model_path)
+        raise
 
     model = tf.keras.models.load_model(args.model_path)
     dtypes = [t.dtype for t in model.decompress.input_signature]
+
+    if args.mode == "compress":
+        compress(args, model, dtypes)
+
+    elif args.mode == "decompress":
+        decompress(args, model, dtypes)
+
+    else:
+        raise ValueError("Unknown mode")
+
+
+def compress(args, model, dtypes):
 
     dataset = load_data(args)
 
@@ -126,7 +93,7 @@ def compress(args):
             if args.plot_figure:
                 plot_result(
                     args,
-                    os.path.join(figure_path, filename.split("/")[-1] + f"_{i//nt:02d}.png"),
+                    os.path.join(args.figure_path, filename.split("/")[-1] + f"_{i//nt:02d}.png"),
                     np.transpose(data_slice, (1, 2, 0)),
                 )
 
@@ -146,17 +113,7 @@ def compress(args):
             f.write(packed.string)
 
 
-def decompress(args):
-
-    if not os.path.exists(args.result_path):
-        os.makedirs(args.result_path)
-    if args.plot_figure:
-        figure_path = os.path.join(args.result_path, "figure")
-        if not os.path.exists(figure_path):
-            os.makedirs(figure_path)
-
-    model = tf.keras.models.load_model(args.model_path)
-    dtypes = [t.dtype for t in model.decompress.input_signature]
+def decompress(args, model, dtypes):
 
     files = sorted(list(glob(args.data_path + "/*.tfci")))
 
@@ -174,7 +131,7 @@ def decompress(args):
             )
 
             if args.plot_figure:
-                plot_result(args, os.path.join(figure_path, filename.split("/")[-1] + f"_{i:02d}.png"), x_hat)
+                plot_result(args, os.path.join(args.figure_path, filename.split("/")[-1] + f"_{i:02d}.png"), x_hat)
 
             data.append(x_hat)
 
@@ -186,7 +143,4 @@ def decompress(args):
 
 if __name__ == "__main__":
     args = parse_args()
-    if args.mode == "compress":
-        compress(args)
-    else:
-        decompress(args)
+    main(args)

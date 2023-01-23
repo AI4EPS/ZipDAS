@@ -1,0 +1,17 @@
+tests/compressed/figure*
+tests/decompressed/figure*
+tests/figure*
+compressed*/figure
+decompressed*/figure
+logs/
+
+*.h5
+*.tfci
+*.pb
+*.index
+*.data-*-of-*
+__pycache__
+checkpoint
+checkpoint/
+variables/
+
