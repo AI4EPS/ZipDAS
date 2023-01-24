@@ -6,6 +6,7 @@ compressed*/figure*
 decompressed*/figure*
 logs/
 tmp/
+tests/comp_jpeg/data*
 
 *.h5
 *.tfci

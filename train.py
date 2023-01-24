@@ -184,8 +184,15 @@ def train(args):
         tf.debugging.enable_check_numerics()
 
     model = BLS2017Model(args.lmbda, args.num_filters)
+
+    initial_learning_rate = 1e-3
+    lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
+        initial_learning_rate,
+        decay_steps=args.steps_per_epoch,
+        decay_rate=0.9,
+        staircase=False)
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
+        optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule),
     )
 
     train_dataset = data_loader(args, "train")
