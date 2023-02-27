@@ -19,7 +19,7 @@ def parse_args():
     # High-level options.
     parser.add_argument("--mode", type=str, default="train", help="train")
     parser.add_argument("--model_path", default="model", help="Path where to save/load the trained model.")
-    parser.add_argument("--lambda", type=float, default=10.0, dest="lmbda", help="Lambda for rate-distortion tradeoff.")
+    parser.add_argument("--lambda", type=float, default=30.0, dest="lmbda", help="Lambda for rate-distortion tradeoff.")
     parser.add_argument("--num_filters", type=int, default=128, help="Number of filters per layer.")
 
     parser.add_argument("--data_path", type=str, default="data", help="data path")
@@ -212,7 +212,7 @@ def train(args):
             # CustomCallback(),
             tf.keras.callbacks.TerminateOnNaN(),
             tf.keras.callbacks.TensorBoard(log_dir=args.log_path, histogram_freq=1, update_freq="epoch"),
-            tf.keras.callbacks.BackupAndRestore(args.log_path),
+            # tf.keras.callbacks.BackupAndRestore(args.log_path),
             # tf.keras.callbacks.ModelCheckpoint(
             #     args.model_path + "/checkpoint/variables",
             #     monitor="val_mse",

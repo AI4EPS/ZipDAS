@@ -56,7 +56,7 @@ def main(args):
         args.figure_path = figure_path
 
     if not os.path.exists(args.model_path):
-        model_url = "https://github.com/AI4EPS/models/releases/download/CompDAS-v1/model.zip"
+        model_url = "https://github.com/AI4EPS/models/releases/download/CompDAS-v2/model.zip"
         download_and_unzip(args.model_path)
         raise
 

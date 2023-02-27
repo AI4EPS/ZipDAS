@@ -83,35 +83,35 @@ class AnalysisTransform(tf.keras.Sequential):
   def __init__(self, num_filters):
     super().__init__(name="analysis")
 
-    self.add(tfc.SignalConv2D(
-        num_filters, (9, 9), name="layer_0", corr=True, strides_down=4,
-        padding="same_zeros", use_bias=True,
-        activation=tfc.GDN(name="gdn_0")))
-    self.add(tfc.SignalConv2D(
-        num_filters, (5, 5), name="layer_1", corr=True, strides_down=2,
-        padding="same_zeros", use_bias=True,
-        activation=tfc.GDN(name="gdn_1")))
-    self.add(tfc.SignalConv2D(
-        num_filters, (5, 5), name="layer_2", corr=True, strides_down=2,
-        padding="same_zeros", use_bias=False,
-        activation=None))
-
     # self.add(tfc.SignalConv2D(
-    #     num_filters//8, (9, 9), name="layer_0", corr=True, strides_down=(4,4),
+    #     num_filters, (9, 9), name="layer_0", corr=True, strides_down=4,
     #     padding="same_zeros", use_bias=True,
     #     activation=tfc.GDN(name="gdn_0")))
     # self.add(tfc.SignalConv2D(
-    #     num_filters//4, (5, 5), name="layer_1", corr=True, strides_down=(2,2),
+    #     num_filters, (5, 5), name="layer_1", corr=True, strides_down=2,
     #     padding="same_zeros", use_bias=True,
     #     activation=tfc.GDN(name="gdn_1")))
     # self.add(tfc.SignalConv2D(
-    #     num_filters//2, (5, 5), name="layer_2", corr=True, strides_down=(2,2),
-    #     padding="same_zeros", use_bias=True,
-    #     activation=tfc.GDN(name="gdn_2")))
-    # self.add(tfc.SignalConv2D(
-    #     num_filters, (5, 5), name="layer_3", corr=True, strides_down=(2,2),
+    #     num_filters, (5, 5), name="layer_2", corr=True, strides_down=2,
     #     padding="same_zeros", use_bias=False,
     #     activation=None))
+
+    self.add(tfc.SignalConv2D(
+        num_filters, (9, 9), name="layer_0", corr=True, strides_down=(4,4),
+        padding="same_zeros", use_bias=True,
+        activation=tfc.GDN(name="gdn_0")))
+    self.add(tfc.SignalConv2D(
+        num_filters, (5, 5), name="layer_1", corr=True, strides_down=(2,2),
+        padding="same_zeros", use_bias=True,
+        activation=tfc.GDN(name="gdn_1")))
+    self.add(tfc.SignalConv2D(
+        num_filters, (5, 5), name="layer_2", corr=True, strides_down=(2,2),
+        padding="same_zeros", use_bias=True,
+        activation=tfc.GDN(name="gdn_2")))
+    self.add(tfc.SignalConv2D(
+        num_filters, (5, 5), name="layer_3", corr=True, strides_down=(2,2),
+        padding="same_zeros", use_bias=False,
+        activation=None))
 
 class SynthesisTransform(tf.keras.Sequential):
   """The synthesis transform."""
@@ -119,35 +119,35 @@ class SynthesisTransform(tf.keras.Sequential):
   def __init__(self, num_filters):
     super().__init__(name="synthesis")
 
-    self.add(tfc.SignalConv2D(
-        num_filters, (5, 5), name="layer_0", corr=False, strides_up=2,
-        padding="same_zeros", use_bias=True,
-        activation=tfc.GDN(name="igdn_0", inverse=True)))
-    self.add(tfc.SignalConv2D(
-        num_filters, (5, 5), name="layer_1", corr=False, strides_up=2,
-        padding="same_zeros", use_bias=True,
-        activation=tfc.GDN(name="igdn_1", inverse=True)))
-    self.add(tfc.SignalConv2D(
-        1, (9, 9), name="layer_2", corr=False, strides_up=4,
-        padding="same_zeros", use_bias=True,
-        activation=None))
-
     # self.add(tfc.SignalConv2D(
-    #     num_filters, (5, 5), name="layer_3", corr=False, strides_up=(2,2),
+    #     num_filters, (5, 5), name="layer_0", corr=False, strides_up=2,
     #     padding="same_zeros", use_bias=True,
-    #     activation=tfc.GDN(name="igdn_3", inverse=True)))
+    #     activation=tfc.GDN(name="igdn_0", inverse=True)))
     # self.add(tfc.SignalConv2D(
-    #     num_filters//2, (5, 5), name="layer_2", corr=False, strides_up=(2,2),
-    #     padding="same_zeros", use_bias=True,
-    #     activation=tfc.GDN(name="igdn_2", inverse=True)))
-    # self.add(tfc.SignalConv2D(
-    #     num_filters//4, (5, 5), name="layer_1", corr=False, strides_up=(2,2),
+    #     num_filters, (5, 5), name="layer_1", corr=False, strides_up=2,
     #     padding="same_zeros", use_bias=True,
     #     activation=tfc.GDN(name="igdn_1", inverse=True)))
     # self.add(tfc.SignalConv2D(
-    #     1, (9, 9), name="layer_0", corr=False, strides_up=(4,4),
-    #     padding="same_zeros", use_bias=False,
+    #     1, (9, 9), name="layer_2", corr=False, strides_up=4,
+    #     padding="same_zeros", use_bias=True,
     #     activation=None))
+
+    self.add(tfc.SignalConv2D(
+        num_filters, (5, 5), name="layer_3", corr=False, strides_up=(2,2),
+        padding="same_zeros", use_bias=True,
+        activation=tfc.GDN(name="igdn_3", inverse=True)))
+    self.add(tfc.SignalConv2D(
+        num_filters, (5, 5), name="layer_2", corr=False, strides_up=(2,2),
+        padding="same_zeros", use_bias=True,
+        activation=tfc.GDN(name="igdn_2", inverse=True)))
+    self.add(tfc.SignalConv2D(
+        num_filters, (5, 5), name="layer_1", corr=False, strides_up=(2,2),
+        padding="same_zeros", use_bias=True,
+        activation=tfc.GDN(name="igdn_1", inverse=True)))
+    self.add(tfc.SignalConv2D(
+        1, (9, 9), name="layer_0", corr=False, strides_up=(4,4),
+        padding="same_zeros", use_bias=False,
+        activation=None))
 
 class BLS2017Model(tf.keras.Model):
   """Main model class."""
