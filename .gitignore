@@ -18,3 +18,12 @@ checkpoint
 checkpoint/
 variables/
 
+compressed/wavelet
+compressed/curvelet
+tests/comp_curvelet/CurveLab-2.1.3
+tests/comp_curvelet/fftw-2.1.5
+tests/comp_curvelet/swig-4.1.1
+*tar.gz
+*.png
+*.jpg
+*.j2k
