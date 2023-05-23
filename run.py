@@ -1,30 +1,37 @@
-### segmentation fault
+### put top to prevent segmentation fault
 import pyct
 import pywt
 
 ###
 import argparse
+import io
+import json
 import math
 import os
+import pickle
+import re
+from collections import defaultdict
 from glob import glob
 from io import BytesIO
 from urllib.request import urlopen
 from zipfile import ZipFile
 
+import cv2
 import h5py
+import imageio.v3 as iio
 import matplotlib.pyplot as plt
 import numpy as np
+import PIL
 
-import tensorflow as tf
-import tensorflow_compression as tfc
+# import tensorflow as tf
+# import tensorflow_compression as tfc
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
-from collections import defaultdict
-import re
+
 from compdas.data import *
-import json
-import pickle
+
+PIL.Image.MAX_IMAGE_PIXELS = None
 
 
 def parse_args():
@@ -34,11 +41,14 @@ def parse_args():
     parser.add_argument("--model_path", type=str, default="model.h5", help="model path")
     parser.add_argument("--data_path", type=str, default="data", help="data path")
     parser.add_argument("--result_path", type=str, default="compressed", help="result path")
-    parser.add_argument("--format", type=str, default="h5", help="data format")
+    parser.add_argument("--data_format", type=str, default="h5", help="data data_format")
     parser.add_argument("--keep_ratio", type=float, default=0.1, help="keep ratio")
+    parser.add_argument("--quality", type=float, default=50, help="quality")
+    parser.add_argument("--config", type=str, default="config.json", help="config file")
     parser.add_argument("--batch", type=int, default=1, help="batch size")
-    # parser.add_argument("--batch_window", type=int, default=10240, help="number of time samples")
+    parser.add_argument("--batch_nt", type=int, default=360000, help="number of time samples")
     parser.add_argument("--plot_figure", action="store_true", help="plot figure")
+    parser.add_argument("--quantile_filter", action="store_true", help="quantile filter")
     parser.add_argument("--workers", type=int, default=1, help="number of threads for preprocessing")
     args = parser.parse_args()
     return args
@@ -47,11 +57,13 @@ def parse_args():
 def plot_result(args, filename, data):
 
     plt.clf()
-    # plt.imshow(data, vmin=-1, vmax=1, cmap="seismic")
+    data = data.astype(np.float32)
+    data -= np.mean(data)
     vmax = np.std(data) * 3
     vmin = -vmax
     plt.matshow(data, vmin=vmin, vmax=vmax, cmap="seismic")
-    plt.savefig(filename, dpi=300)
+    plt.title(f"[vmin, vmax] = [{vmin:.0f}, {vmax:.0f}]")
+    plt.savefig(filename, dpi=300, bbox_inches="tight")
     plt.close()
 
 
@@ -61,10 +73,25 @@ def download_and_unzip(url, extract_to="./model"):
     zipfile.extractall(path=extract_to)
 
 
+@dataclass
+class Config:
+    batch_nt: int = 6000
+
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+
 def main(args):
 
-    if not os.path.exists(args.model_path):
-        os.makedirs(args.model_path)
+    if os.path.exists(args.config):
+        with open(args.config, "r") as f:
+            config = json.load(f)
+    else:
+        config = {}
+    config.update(vars(args))
+    args = Config(**config)
+    print(json.dumps(vars(args), indent=4, sort_keys=True))
 
     args.result_path = os.path.join(args.result_path, args.method)
     if not os.path.exists(args.result_path):
@@ -77,21 +104,22 @@ def main(args):
 
     if args.mode == "compress":
 
-        if not os.path.exists(args.model_path):
-            model_url = "https://github.com/AI4EPS/models/releases/download/CompDAS-v2/model.zip"
-            download_and_unzip(args.model_path)
-            raise
-
         if args.method == "Neual":
+            if not os.path.exists(args.model_path):
+                model_url = "https://github.com/AI4EPS/models/releases/download/CompDAS-v2/model.zip"
+                download_and_unzip(args.model_path)
             model = tf.keras.models.load_model(args.model_path)
             dtypes = [t.dtype for t in model.decompress.input_signature]
             compress_neural(args, model, dtypes)
+
+        elif args.method == "jpeg":
+            compress_jpeg(args)
 
         elif (args.method == "wavelet") or (args.method == "curvelet"):
             compress(args)
 
         else:
-            raise ("method must be neural, wavelet, or curvelet")
+            raise ("method must be neural, wavelet, curvelet, or jpeg")
 
     elif args.mode == "decompress":
 
@@ -100,11 +128,14 @@ def main(args):
             dtypes = [t.dtype for t in model.decompress.input_signature]
             decompress_neural(args, model, dtypes)
 
+        elif args.method == "jpeg":
+            decompress_jpeg(args)
+
         elif (args.method == "wavelet") or (args.method == "curvelet"):
             decompress(args)
 
         else:
-            raise ("method must be neural, wavelet, or curvelet")
+            raise ("method must be neural, wavelet, curvelet, or jpeg")
     else:
         raise ("mode must be compress or decompress")
 
@@ -112,68 +143,73 @@ def main(args):
 def compress(args):
 
     dataset = load_data(args)
+    keep = args.keep_ratio
 
-    for meta in tqdm(dataset):
+    for meta in tqdm(dataset, desc="Compressing"):
 
-        data = meta["data"].numpy()
         filename = meta["filename"]
 
-        if args.plot_figure:
-            plot_result(args, os.path.join(args.figure_path, filename.split("/")[-1] + f"_{args.method}.png"), data)
+        nx, nt = meta["data"].shape
+        for i in range(0, nt, args.batch_nt):
 
-        nx, nt = data.shape
-        keep = args.keep_ratio
-        meta = {}
+            data = meta["data"][:, i : i + args.batch_nt]
 
-        if args.method == "wavelet":
+            if args.plot_figure:
+                plot_result(
+                    args, os.path.join(args.figure_path, filename.split("/")[-1] + f"{i:06d}_{args.method}.png"), data
+                )
 
-            config = {
-                "n": 4,
-                "w": "db1",
-            }
+            if args.method == "wavelet":
+                config = {
+                    "n": 4,
+                    "w": "db1",
+                }
 
-            coeffs = pywt.wavedec2(data, wavelet=config["w"], level=config["n"])
-            array, coeffs = pywt.coeffs_to_array(coeffs)
-            config["coeffs"] = coeffs
+                coeffs = pywt.wavedec2(data, wavelet=config["w"], level=config["n"])
+                array, coeffs = pywt.coeffs_to_array(coeffs)
+                config["coeffs"] = coeffs
 
-        elif args.method == "curvelet":
-            nx, nt = data.shape
-            config = {
-                "n": (nx, nt),
-                "nbs": 3,
-                "nba": 1,
-                "ac": False,
-            }
-            func_fdct2 = pyct.fdct2(
-                config["n"], config["nbs"], config["nba"], config["ac"], norm=False, vec=True, cpx=False
+            elif args.method == "curvelet":
+                config = {
+                    "n": data.shape,
+                    "nbs": 3,
+                    "nba": 1,
+                    "ac": False,
+                }
+                func_fdct2 = pyct.fdct2(
+                    config["n"], config["nbs"], config["nba"], config["ac"], norm=False, vec=True, cpx=False
+                )
+                array = func_fdct2.fwd(data)
+
+            else:
+                config = {}
+                raise ("method must be wavelet or curvelet")
+
+            topk = int(array.size * (1 - keep))
+            array_1d = np.abs(array.reshape(-1))
+            threshold = array_1d[np.argpartition(array_1d, topk)[topk]]
+            array_filt = array * (np.abs(array) >= threshold)
+
+            vrange = [array_filt.min(), array_filt.max()]
+            array_quant = (array_filt - vrange[0]) / (vrange[1] - vrange[0]) * (2**16 - 1)
+            array_quant = array_quant.astype(np.uint16)
+
+            config["vrange"] = vrange
+
+            np.savez_compressed(
+                os.path.join(args.result_path, filename.split("/")[-1] + f"_{i:06d}.npz"),
+                data=array_quant,
             )
-            array = func_fdct2.fwd(data)
 
-        else:
-            config = {}
-            raise ("method must be wavelet or curvelet")
+            ## save config to pickle file
+            with open(os.path.join(args.result_path, filename.split("/")[-1] + f"_{i:06d}.pkl"), "wb") as f:
+                pickle.dump(config, f)
 
-        topk = int(array.size * (1 - keep))
-        array_1d = np.abs(array.reshape(-1))
-        threshold = array_1d[np.argpartition(array_1d, topk)[topk]]
-        array_filt = array * (np.abs(array) >= threshold)
-        # print("None zeros ratios: ", np.count_nonzero(array_filt) / array.size)
-
-        vrange = [array_filt.min(), array_filt.max()]
-        array_quant = ((array_filt - vrange[0]) / (vrange[1] - vrange[0]) * 255.0).astype(np.uint8)
-        config["vrange"] = vrange
-
-        np.savez_compressed(
-            os.path.join(args.result_path, filename.split("/")[-1] + f".npz"),
-            allow_pickle=False,
-            data=array_quant,
-            # vrange=vrange,
-            # **config,
-        )
-
-        ## save config to pickle file
         with open(os.path.join(args.result_path, filename.split("/")[-1] + f".pkl"), "wb") as f:
-            pickle.dump(config, f)
+            tmp = {"mean": meta["mean"], "norm": meta["norm"]}
+            if "scale_factor" in meta:
+                tmp["scale_factor"] = meta["scale_factor"]
+            pickle.dump(tmp, f)
 
 
 def decompress(args):
@@ -182,32 +218,56 @@ def decompress(args):
 
     data_list = []
     h5_name = ""
-    for filename in tqdm(files):
+    std_interp = 1
+    mean_interp = 0
+
+    for filename in tqdm(files, desc="Decompressing"):
 
         new_name = re.sub(r"_[0-9]*.npz$", "", filename.split("/")[-1])
+
         if new_name != h5_name:
             if len(data_list) > 0:
+                data_list = np.concatenate(data_list, axis=-1)
+                nx_, nt_ = data_list.shape
+                data_list = data_list * std_interp[:nx_, :nt_] + mean_interp[:nx_, :nt_]
                 with h5py.File(os.path.join(args.result_path, h5_name), "w") as f:
-                    f.create_dataset("data", data=np.concatenate(data_list, axis=-1))
+                    f.create_dataset("data", data=data_list)
             h5_name = new_name
             data_list = []
+            with open(re.sub(r"_[0-9]*.npz$", "", filename) + ".pkl", "rb") as f:
+                norm_dict = pickle.load(f)
+                std = norm_dict["norm"]
+                mean = norm_dict["mean"]
+                if "scale_factor" in norm_dict:
+                    scale_factor = norm_dict["scale_factor"]
+                    mean_interp = F.interpolate(
+                        torch.from_numpy(mean), scale_factor=scale_factor, align_corners=False, mode="bilinear"
+                    ).numpy()
+                    std_interp = F.interpolate(
+                        torch.from_numpy(std), scale_factor=scale_factor, align_corners=False, mode="bilinear"
+                    ).numpy()
+                    std_interp[std_interp == 0] = 1
+                    mean_interp = np.squeeze(mean_interp)
+                    std_interp = np.squeeze(std_interp)
+                else:
+                    mean_interp = mean
+                    std_interp = std
 
-        meta = np.load(filename, allow_pickle=(args.method == "wavelet"))
+        meta = np.load(filename)
         with open(filename.replace(".npz", ".pkl"), "rb") as f:
             config = pickle.load(f)
 
         array = meta["data"].astype(np.float32)
         vrange = config["vrange"]
-        array = array.astype(np.float32) * (vrange[1] - vrange[0]) / 255.0 + vrange[0]
+        array = array.astype(np.float32) / 255.0 * (vrange[1] - vrange[0]) + vrange[0]
 
         if args.method == "wavelet":
             # config = {
             #     "n": int(meta["n"]),
             #     "w": meta["w"],
             # }
-
             coeffs = config["coeffs"]
-            coeffs = pywt.array_to_coeffs(array, coeffs, output_format="wavedec2")
+            coeffs = pywt.array_to_coeffs(array, coeffs, output_data_format="wavedec2")
             data = pywt.waverec2(coeffs, wavelet=config["w"])
 
         elif args.method == "curvelet":
@@ -217,7 +277,6 @@ def decompress(args):
             #     "nba": int(meta["nba"]),
             #     "ac": bool(meta["ac"]),
             # }
-
             func_fdct2 = pyct.fdct2(
                 config["n"], config["nbs"], config["nba"], config["ac"], norm=False, vec=True, cpx=False
             )
@@ -226,12 +285,156 @@ def decompress(args):
         else:
             raise ("method must be wavelet or curvelet")
 
+        data_list.append(data)
         if args.plot_figure:
             plot_result(args, os.path.join(args.figure_path, filename.split("/")[-1] + f"_{args.method}.png"), data)
 
     if len(data_list) > 0:
+        data_list = np.concatenate(data_list, axis=-1)
+        nx_, nt_ = data_list.shape
+        data_list = data_list * std_interp[:nx_, :nt_] + mean_interp[:nx_, :nt_]
         with h5py.File(os.path.join(args.result_path, h5_name), "w") as f:
-            f.create_dataset("data", data=np.concatenate(data_list, axis=-1))
+            ## TODO: debug float64
+            f.create_dataset("data", data=data_list)
+
+
+def compress_jpeg(args):
+
+    dataset = load_data(args)
+    quality = args.quality
+
+    pbar = tqdm(dataset, desc="Compressing (JPEG)")
+    for meta in pbar:
+
+        filename = meta["filename"]
+
+        nx, nt = meta["data"].shape
+        # vmax_abs = meta["vmax_abs"]
+        if "vmax_abs" in meta:
+            vmax_abs = meta["vmax_abs"]
+        else:
+            vmax_abs = np.max(np.abs(meta["data"]))
+        if "vmax_uint" in meta:
+            vmax_uint = meta["vmax_uint"]
+        else:
+            vmax_uint = 2**15 - 1
+
+        for i in range(0, nt, args.batch_nt):
+
+            pbar.update(1)
+            data = meta["data"][:, i : i + args.batch_nt]
+
+            # data = (data / vmax_abs + 0.5) * (2**16 - 1)
+            data = (data / vmax_abs) * vmax_uint + vmax_uint
+            data_unit = data.astype(np.uint16)
+
+            # data = (data / np.max(np.abs(data)) + 0.5) * (2**8-1)
+            # data_unit8 = data.astype(np.uint8)
+
+            if args.plot_figure:
+                plot_result(
+                    args,
+                    os.path.join(args.figure_path, filename.split("/")[-1] + f"_{i:06d}_{args.method}.png"),
+                    data_unit,
+                )
+
+            iio.imwrite(
+                os.path.join(args.result_path, filename.split("/")[-1] + f"_{i:06d}.j2k"),
+                data_unit,
+                plugin="pillow",
+                extension=".j2k",
+                quality_mode="rates",
+                quality_layers=[quality],
+                irreversible=True,
+            )
+
+        with open(os.path.join(args.result_path, filename.split("/")[-1] + f".pkl"), "wb") as f:
+            tmp = {"mean": meta["mean"], "norm": meta["norm"]}
+            if "scale_factor" in meta:
+                tmp["scale_factor"] = meta["scale_factor"]
+            if "vmax_abs" in meta:
+                tmp["vmax_abs"] = meta["vmax_abs"]
+            else:
+                tmp["vmax_abs"] = vmax_abs
+            if "vmax_uint" in meta:
+                tmp["vmax_uint"] = meta["vmax_uint"]
+            else:
+                tmp["vmax_uint"] = vmax_uint
+            pickle.dump(tmp, f)
+
+
+def decompress_jpeg(args):
+
+    files = sorted(list(glob(args.data_path + "/*.j2k")))
+
+    data_list = []
+    h5_name = ""
+    std_interp = 1
+    mean_interp = 0
+
+    for filename in tqdm(files, desc="Decompressing"):
+
+        new_name = re.sub(r"_[0-9]*.j2k$", "", filename.split("/")[-1])
+
+        if new_name != h5_name:
+
+            if len(data_list) > 0:
+                data_list = np.concatenate(data_list, axis=-1).astype(np.float32)
+                data_list = (data_list - vmax_uint) / vmax_uint * vmax_abs
+                print(data_list.shape, data_list.dtype)
+                nx_, nt_ = data_list.shape
+                # data_list = data_list * std_interp[:nx_, :nt_] + mean_interp[:nx_, :nt_]
+                with h5py.File(os.path.join(args.result_path, h5_name), "w") as f:
+                    f.create_dataset("data", data=data_list)
+
+            h5_name = new_name
+            data_list = []
+            with open(re.sub(r"_[0-9]*.j2k$", "", filename) + ".pkl", "rb") as f:
+                norm_dict = pickle.load(f)
+                std = norm_dict["norm"]
+                mean = norm_dict["mean"]
+                # if "vmax_uint" in norm_dict:
+                #     vmax_uint = norm_dict["vmax_uint"]
+                # else:
+                #     vmax_uint = 2**15 - 1
+                vmax_uint = norm_dict["vmax_uint"]
+                vmax_abs = norm_dict["vmax_abs"]
+                if "scale_factor" in norm_dict:
+                    scale_factor = norm_dict["scale_factor"]
+                    mean_interp = F.interpolate(
+                        torch.from_numpy(mean), scale_factor=scale_factor, align_corners=False, mode="bilinear"
+                    ).numpy()
+                    std_interp = F.interpolate(
+                        torch.from_numpy(std), scale_factor=scale_factor, align_corners=False, mode="bilinear"
+                    ).numpy()
+                    std_interp[std_interp == 0] = 1
+                    mean_interp = np.squeeze(mean_interp)
+                    std_interp = np.squeeze(std_interp)
+                else:
+                    mean_interp = mean
+                    std_interp = std
+
+        data = iio.imread(filename, plugin="pillow", extension=".j2k")
+
+        # print(data.shape, data.dtype)
+        # with open(filename.replace(".j2k", ".pkl"), "rb") as f:
+        #     config = pickle.load(f)
+
+        # vrange = config["vrange"]
+        # data = (data / 255.0) * (vrange[1] - vrange[0]) + vrange[0]
+
+        data_list.append(data)
+        if args.plot_figure:
+            plot_result(args, os.path.join(args.figure_path, filename.split("/")[-1] + f"_{args.method}.png"), data)
+
+    if len(data_list) > 0:
+        data_list = np.concatenate(data_list, axis=-1).astype(np.float32)
+        data_list = (data_list - vmax_uint) / vmax_uint * vmax_abs
+        nx_, nt_ = data_list.shape
+        # data_list = data_list * std_interp[:nx_, :nt_] + mean_interp[:nx_, :nt_]
+        with h5py.File(os.path.join(args.result_path, h5_name), "w") as f:
+            ## TODO: debug float64
+            f.create_dataset("data", data=data_list)
 
 
 def compress_neural(args, model, dtypes):
