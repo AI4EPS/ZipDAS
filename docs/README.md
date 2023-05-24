@@ -1,5 +1,15 @@
 # Data **Comp**ression for Distributed **A**cou**s**tic **S**ensing (Compass)
 
+python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise/jpeg --method=jpeg --quality=50
+
+python run.py --mode decompress --data_path results/compressed_noise/jpeg --result_path results/decompressed_noise/jpeg --method=jpeg
+
+python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=jpeg --quality=24 --batch_nt=12000 && python run.py --mode decompress --data_path results/compressed_noise/jpeg --result_path results/decompressed_noise --method=jpeg  --plot_figure
+
+python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=jpeg --quality=24 --plot_figure --batch_nt=12000 && python run.py --mode decompress --data_path results/compressed_noise/jpeg --result_path results/decompressed_noise --method=jpeg  --plot_figure
+
+python run.py --mode compress --data_path event_data --data_format h5 --result_path results/compressed_event --method=jpeg --quality=10 && python run.py --mode decompress --data_path results/compressed_event/jpeg --result_path results/decompressed_event --method=jpeg  --plot_figure
+
 ## Compression
 ```
 python run.py --model_path model --mode compress --data_path tests/data --format h5 --result_path compressed --plot_figure
@@ -22,7 +32,7 @@ python train.py --mode test  --model_path model  --data_path tests/data --result
 
 ## Run CCTorch:
 ```
-python run.py --data-list1=test_decompressed.txt --data-path=../decompressed --dt=0.04 --maxlag=30  --mode=AM  --block-num1 1 --block-num2 2 --fixed-channels 300 500 700 900  --log-interval 1 --result-path results_decompressed
+python run.py --data-list1=test_decompressed.txt --data-path=../decompressed --dt=0.04 --maxlag=30  --mode=AN  --block-size1 1300 --block-size2 1300 --fixed-channels 300 500 700 900  --log-interval 1 --result-path results_decompressed
 ```
 
 ## Install Python Packages
@@ -69,3 +79,62 @@ export FDCT=/home/weiqiang/Research/DASCompression/tests/comp_curvelet/CurveLab-
 export FFTW=/home/weiqiang/.local/
 python setup.py build install
 ```
+
+
+## Experiments
+
+## Ambient Noise
+
+### compress data
+```
+python run.py --mode compress --data_path CCTorch/event_data/ --format h5 --result_path compressed_template --method=wavelet --keep_ratio=0.1 --plot_figure
+```
+
+### decompress data
+```
+python run.py --mode decompress --data_path compressed_template/wavelet --result_path decompressed_template/ --method=wavelet --plot_figure
+```
+
+### run CCTorch
+#### RAW 
+```
+python ../CCTorch/run.py --pair-list=templates_raw/event_pair.txt  --data-path=templates_raw/template.dat --data-format=memmap --config=templates_raw/config.json  --batch-size=512  --result-path=templates_raw/ccpairs```
+### COMPRESSED
+```
+```
+python ../CCTorch/run.py --pair-list=templates_compressed/event_pair.txt  --data-path=templates_compressed/template.dat --data-format=memmap --config=templates_compressed/config.json  --batch-size=512  --result-path=templates_compressed/ccpairs
+```
+
+
+
+## Earthquake
+### convert data
+```
+python CCTorch/tests/convert_templates.py
+```
+
+### compress data
+```
+python run.py --mode compress --data_path CCTorch/event_data/ --format h5 --result_path compressed_template --method=wavelet --keep_ratio=0.1 --plot_figure
+```
+
+### decompress data
+```
+python run.py --mode decompress --data_path compressed_template/wavelet --result_path decompressed_template/ --method=wavelet --plot_figure
+```
+
+### cut templates
+```
+python CCTorch/tests/convert_templates.py
+```
+
+### run CCTorch
+#### RAW 
+```
+python ../CCTorch/run.py --pair-list=templates_raw/event_pair.txt  --data-path=templates_raw/template.dat --data-format=memmap --config=templates_raw/config.json  --batch-size=512  --result-path=templates_raw/ccpairs
+```
+### COMPRESSED
+```
+python ../CCTorch/run.py --pair-list=templates_compressed/event_pair.txt  --data-path=templates_compressed/template.dat --data-format=memmap --config=templates_compressed/config.json  --batch-size=512  --result-path=templates_compressed/ccpairs
+```
+
