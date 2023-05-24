@@ -13,6 +13,7 @@ import re
 from collections import defaultdict
 from glob import glob
 from io import BytesIO
+from pathlib import Path
 from urllib.request import urlopen
 from zipfile import ZipFile
 
@@ -23,13 +24,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import PIL
 
+
 # import tensorflow as tf
 # import tensorflow_compression as tfc
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
-from compdas.data import *
+from zipdas.data import *
 
 PIL.Image.MAX_IMAGE_PIXELS = None
 
@@ -40,10 +42,12 @@ def parse_args():
     parser.add_argument("--mode", type=str, default="compress", help="compress or decompress")
     parser.add_argument("--model_path", type=str, default="model.h5", help="model path")
     parser.add_argument("--data_path", type=str, default="data", help="data path")
-    parser.add_argument("--result_path", type=str, default="compressed", help="result path")
+    parser.add_argument("--result_path", type=str, default="results", help="result path")
     parser.add_argument("--data_format", type=str, default="h5", help="data data_format")
     parser.add_argument("--keep_ratio", type=float, default=0.1, help="keep ratio")
     parser.add_argument("--quality", type=float, default=50, help="quality")
+    parser.add_argument("--save_preprocess", action="store_true", help="save reprocess data")
+    parser.add_argument("--recover_amplitude", action="store_true", help="recover amplitude")
     parser.add_argument("--config", type=str, default="config.json", help="config file")
     parser.add_argument("--batch", type=int, default=1, help="batch size")
     parser.add_argument("--batch_nt", type=int, default=360000, help="number of time samples")
@@ -101,6 +105,11 @@ def main(args):
         args.figure_path = os.path.join(args.result_path, "figures")
         if not os.path.exists(args.figure_path):
             os.makedirs(args.figure_path)
+
+    if args.save_preprocess:
+        args.preprocess_path = os.path.join(args.result_path, "preprocess")
+        if not os.path.exists(args.preprocess_path):
+            os.makedirs(args.preprocess_path)
 
     if args.mode == "compress":
 
@@ -302,14 +311,25 @@ def compress_jpeg(args):
 
     dataset = load_data(args)
     quality = args.quality
+    result_path = Path(args.result_path)
+    if args.plot_figure:
+        figure_path = Path(args.figure_path)
+    if args.save_preprocess:
+        preprocess_path = Path(args.preprocess_path)
 
-    pbar = tqdm(dataset, desc="Compressing (JPEG)")
-    for meta in pbar:
+    for meta in dataset:
 
         filename = meta["filename"]
+        basename = filename.split("/")[-1]
+
+        if not (result_path / basename).exists():
+            (result_path / basename).mkdir(parents=True)
+
+        if args.save_preprocess:
+            with h5py.File(preprocess_path / basename, "w") as f:
+                f.create_dataset("data", data=meta["data"])
 
         nx, nt = meta["data"].shape
-        # vmax_abs = meta["vmax_abs"]
         if "vmax_abs" in meta:
             vmax_abs = meta["vmax_abs"]
         else:
@@ -319,28 +339,23 @@ def compress_jpeg(args):
         else:
             vmax_uint = 2**15 - 1
 
-        for i in range(0, nt, args.batch_nt):
+        for i in tqdm(range(0, nt, args.batch_nt), desc=f"Compressing (JPEG) {basename}"):
 
-            pbar.update(1)
             data = meta["data"][:, i : i + args.batch_nt]
 
-            # data = (data / vmax_abs + 0.5) * (2**16 - 1)
             data = (data / vmax_abs) * vmax_uint + vmax_uint
-            data_unit = data.astype(np.uint16)
-
-            # data = (data / np.max(np.abs(data)) + 0.5) * (2**8-1)
-            # data_unit8 = data.astype(np.uint8)
+            data_uint = data.astype(np.uint16)
 
             if args.plot_figure:
                 plot_result(
                     args,
-                    os.path.join(args.figure_path, filename.split("/")[-1] + f"_{i:06d}_{args.method}.png"),
-                    data_unit,
+                    figure_path / f"{basename}_{i:06d}.png",
+                    data_uint,
                 )
 
             iio.imwrite(
-                os.path.join(args.result_path, filename.split("/")[-1] + f"_{i:06d}.j2k"),
-                data_unit,
+                result_path / basename / f"{i:06d}.j2k",
+                data_uint,
                 plugin="pillow",
                 extension=".j2k",
                 quality_mode="rates",
@@ -348,7 +363,7 @@ def compress_jpeg(args):
                 irreversible=True,
             )
 
-        with open(os.path.join(args.result_path, filename.split("/")[-1] + f".pkl"), "wb") as f:
+        with open((str(result_path / basename) + ".pkl"), "wb") as f:
             tmp = {"mean": meta["mean"], "norm": meta["norm"]}
             if "scale_factor" in meta:
                 tmp["scale_factor"] = meta["scale_factor"]
@@ -365,75 +380,47 @@ def compress_jpeg(args):
 
 def decompress_jpeg(args):
 
-    files = sorted(list(glob(args.data_path + "/*.j2k")))
+    data_path = Path(args.data_path)
+    result_path = Path(args.result_path)
+    if args.plot_figure:
+        figure_path = Path(args.figure_path)
 
-    data_list = []
-    h5_name = ""
-    std_interp = 1
-    mean_interp = 0
+    for folder in data_path.glob(f"*.{args.data_format}"):
 
-    for filename in tqdm(files, desc="Decompressing"):
+        with open(str(folder) + ".pkl", "rb") as f:
+            norm_dict = pickle.load(f)
+            std = norm_dict["norm"]
+            mean = norm_dict["mean"]
+            vmax_uint = norm_dict["vmax_uint"]
+            vmax_abs = norm_dict["vmax_abs"]
+            if args.recover_amplitude:
+                scale_factor = norm_dict["scale_factor"]
+                mean_interp = F.interpolate(
+                    torch.from_numpy(mean), scale_factor=scale_factor, align_corners=False, mode="bilinear"
+                ).numpy()
+                std_interp = F.interpolate(
+                    torch.from_numpy(std), scale_factor=scale_factor, align_corners=False, mode="bilinear"
+                ).numpy()
+                std_interp[std_interp == 0] = 1
+                mean_interp = np.squeeze(mean_interp)
+                std_interp = np.squeeze(std_interp)
 
-        new_name = re.sub(r"_[0-9]*.j2k$", "", filename.split("/")[-1])
+        data_list = []
+        for filename in tqdm(list(folder.glob("*.j2k")), desc=f"Decompressing (JPEG) {folder.name}"):
 
-        if new_name != h5_name:
+            data = iio.imread(filename, plugin="pillow", extension=".j2k")
 
-            if len(data_list) > 0:
-                data_list = np.concatenate(data_list, axis=-1).astype(np.float32)
-                data_list = (data_list - vmax_uint) / vmax_uint * vmax_abs
-                print(data_list.shape, data_list.dtype)
-                nx_, nt_ = data_list.shape
-                # data_list = data_list * std_interp[:nx_, :nt_] + mean_interp[:nx_, :nt_]
-                with h5py.File(os.path.join(args.result_path, h5_name), "w") as f:
-                    f.create_dataset("data", data=data_list)
+            data_list.append(data)
 
-            h5_name = new_name
-            data_list = []
-            with open(re.sub(r"_[0-9]*.j2k$", "", filename) + ".pkl", "rb") as f:
-                norm_dict = pickle.load(f)
-                std = norm_dict["norm"]
-                mean = norm_dict["mean"]
-                # if "vmax_uint" in norm_dict:
-                #     vmax_uint = norm_dict["vmax_uint"]
-                # else:
-                #     vmax_uint = 2**15 - 1
-                vmax_uint = norm_dict["vmax_uint"]
-                vmax_abs = norm_dict["vmax_abs"]
-                if "scale_factor" in norm_dict:
-                    scale_factor = norm_dict["scale_factor"]
-                    mean_interp = F.interpolate(
-                        torch.from_numpy(mean), scale_factor=scale_factor, align_corners=False, mode="bilinear"
-                    ).numpy()
-                    std_interp = F.interpolate(
-                        torch.from_numpy(std), scale_factor=scale_factor, align_corners=False, mode="bilinear"
-                    ).numpy()
-                    std_interp[std_interp == 0] = 1
-                    mean_interp = np.squeeze(mean_interp)
-                    std_interp = np.squeeze(std_interp)
-                else:
-                    mean_interp = mean
-                    std_interp = std
+            if args.plot_figure:
+                plot_result(args, figure_path / f"{folder.name}_{filename.name}_{args.method}.png", data)
 
-        data = iio.imread(filename, plugin="pillow", extension=".j2k")
-
-        # print(data.shape, data.dtype)
-        # with open(filename.replace(".j2k", ".pkl"), "rb") as f:
-        #     config = pickle.load(f)
-
-        # vrange = config["vrange"]
-        # data = (data / 255.0) * (vrange[1] - vrange[0]) + vrange[0]
-
-        data_list.append(data)
-        if args.plot_figure:
-            plot_result(args, os.path.join(args.figure_path, filename.split("/")[-1] + f"_{args.method}.png"), data)
-
-    if len(data_list) > 0:
         data_list = np.concatenate(data_list, axis=-1).astype(np.float32)
         data_list = (data_list - vmax_uint) / vmax_uint * vmax_abs
-        nx_, nt_ = data_list.shape
-        # data_list = data_list * std_interp[:nx_, :nt_] + mean_interp[:nx_, :nt_]
-        with h5py.File(os.path.join(args.result_path, h5_name), "w") as f:
-            ## TODO: debug float64
+        if args.recover_amplitude:
+            nx_, nt_ = data_list.shape
+            data_list = data_list * std_interp[:nx_, :nt_] + mean_interp[:nx_, :nt_]
+        with h5py.File(result_path / folder.name, "w") as f:
             f.create_dataset("data", data=data_list)
 
 

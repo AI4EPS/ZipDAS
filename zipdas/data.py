@@ -39,7 +39,7 @@ def read_hdf5(args, filename):
         else:
             raise ValueError(f"{filename} does not contain Data or data")
 
-        data = data[:, :6000]
+        # data = data[:, :6000]
         return {"data": data, "filename": filename}
     
 # def read_memmap(args, filename):
@@ -352,6 +352,7 @@ def load_data(args):
     
         # plt.savefig(f"debug_equalize_hist_{type}.pdf", dpi=300, bbox_inches="tight")
 
+        
         yield meta
 
         # data = meta["data"]
