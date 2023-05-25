@@ -152,158 +152,156 @@ def main(args):
 def compress(args):
 
     dataset = load_data(args)
-    keep = args.keep_ratio
+    keep_ratio = args.keep_ratio
+    result_path = Path(args.result_path)
+    if args.plot_figure:
+        figure_path = Path(args.figure_path)
+    if args.save_preprocess:
+        preprocess_path = Path(args.preprocess_path)
 
-    for meta in tqdm(dataset, desc="Compressing"):
+    for meta in dataset:
 
         filename = meta["filename"]
+        basename = filename.split("/")[-1]
+
+        if not (result_path / basename).exists():
+            (result_path / basename).mkdir(parents=True)
+
+        if args.save_preprocess:
+            with h5py.File(preprocess_path / basename, "w") as f:
+                f.create_dataset("data", data=meta["data"])
 
         nx, nt = meta["data"].shape
-        for i in range(0, nt, args.batch_nt):
+        if "vmax_uint" in meta:
+            vmax_uint = meta["vmax_uint"]
+        else:
+            vmax_uint = 2**15 - 1
+
+        config = defaultdict(dict)
+        for i in tqdm(range(0, nt, args.batch_nt), desc=f"Compressing ({args.method}) {basename}"):
 
             data = meta["data"][:, i : i + args.batch_nt]
 
             if args.plot_figure:
                 plot_result(
-                    args, os.path.join(args.figure_path, filename.split("/")[-1] + f"{i:06d}_{args.method}.png"), data
+                    args,
+                    figure_path / f"{basename}_{i:06d}.png",
+                    data,
                 )
 
             if args.method == "wavelet":
-                config = {
+                config[f"{i:06d}"] = {
                     "n": 4,
                     "w": "db1",
                 }
 
-                coeffs = pywt.wavedec2(data, wavelet=config["w"], level=config["n"])
+                coeffs = pywt.wavedec2(data, wavelet=config[f"{i:06d}"]["w"], level=config[f"{i:06d}"]["n"])
                 array, coeffs = pywt.coeffs_to_array(coeffs)
-                config["coeffs"] = coeffs
+                config[f"{i:06d}"]["coeffs"] = coeffs
 
             elif args.method == "curvelet":
-                config = {
+                config[f"{i:06d}"] = {
                     "n": data.shape,
                     "nbs": 3,
                     "nba": 1,
                     "ac": False,
                 }
                 func_fdct2 = pyct.fdct2(
-                    config["n"], config["nbs"], config["nba"], config["ac"], norm=False, vec=True, cpx=False
+                    config[f"{i:06d}"]["n"], config[f"{i:06d}"]["nbs"], config[f"{i:06d}"]["nba"], config[f"{i:06d}"]["ac"], norm=False, vec=True, cpx=False
                 )
                 array = func_fdct2.fwd(data)
 
             else:
-                config = {}
+                config[f"{i:06d}"] = {}
                 raise ("method must be wavelet or curvelet")
 
-            topk = int(array.size * (1 - keep))
+            topk = int(array.size * (1 - keep_ratio))
             array_1d = np.abs(array.reshape(-1))
             threshold = array_1d[np.argpartition(array_1d, topk)[topk]]
             array_filt = array * (np.abs(array) >= threshold)
 
-            vrange = [array_filt.min(), array_filt.max()]
-            array_quant = (array_filt - vrange[0]) / (vrange[1] - vrange[0]) * (2**16 - 1)
-            array_quant = array_quant.astype(np.uint16)
+            vmax = np.max(np.abs(array_filt)) 
+            array_unit = array_filt / vmax * vmax_uint + vmax_uint
+            array_unit = array_unit.astype(np.uint16)
 
-            config["vrange"] = vrange
+            config[f"{i:06d}"]["vmax"] = vmax
 
             np.savez_compressed(
-                os.path.join(args.result_path, filename.split("/")[-1] + f"_{i:06d}.npz"),
-                data=array_quant,
+                result_path / basename / f"{i:06d}.npz",
+                data=array_unit,
             )
 
-            ## save config to pickle file
-            with open(os.path.join(args.result_path, filename.split("/")[-1] + f"_{i:06d}.pkl"), "wb") as f:
-                pickle.dump(config, f)
-
-        with open(os.path.join(args.result_path, filename.split("/")[-1] + f".pkl"), "wb") as f:
+        with open((str(result_path / basename) + ".pkl"), "wb") as f:
             tmp = {"mean": meta["mean"], "norm": meta["norm"]}
             if "scale_factor" in meta:
                 tmp["scale_factor"] = meta["scale_factor"]
+            tmp["vmax_uint"] = vmax_uint
+            tmp["config"] = config
             pickle.dump(tmp, f)
 
 
 def decompress(args):
 
-    files = sorted(list(glob(args.data_path + "/*.npz")))
+    data_path = Path(args.data_path)
+    result_path = Path(args.result_path)
+    if args.plot_figure:
+        figure_path = Path(args.figure_path)
 
-    data_list = []
-    h5_name = ""
-    std_interp = 1
-    mean_interp = 0
+    for folder in data_path.glob(f"*.{args.data_format}"):
 
-    for filename in tqdm(files, desc="Decompressing"):
+        with open(str(folder) + ".pkl", "rb") as f:
+            norm_dict = pickle.load(f)
+            config = norm_dict["config"]
+            std = norm_dict["norm"]
+            mean = norm_dict["mean"]
+            vmax_uint = norm_dict["vmax_uint"]
+            if args.recover_amplitude:
+                scale_factor = norm_dict["scale_factor"]
+                mean_interp = F.interpolate(
+                    torch.from_numpy(mean), scale_factor=scale_factor, align_corners=False, mode="bilinear"
+                ).numpy()
+                std_interp = F.interpolate(
+                    torch.from_numpy(std), scale_factor=scale_factor, align_corners=False, mode="bilinear"
+                ).numpy()
+                std_interp[std_interp == 0] = 1
+                mean_interp = np.squeeze(mean_interp)
+                std_interp = np.squeeze(std_interp)
 
-        new_name = re.sub(r"_[0-9]*.npz$", "", filename.split("/")[-1])
+        data_list = []
+        for filename in tqdm(sorted(list(folder.glob("*.npz"))), desc=f"Decompressing ({args.method}) {folder.name}"):
 
-        if new_name != h5_name:
-            if len(data_list) > 0:
-                data_list = np.concatenate(data_list, axis=-1)
-                nx_, nt_ = data_list.shape
-                data_list = data_list * std_interp[:nx_, :nt_] + mean_interp[:nx_, :nt_]
-                with h5py.File(os.path.join(args.result_path, h5_name), "w") as f:
-                    f.create_dataset("data", data=data_list)
-            h5_name = new_name
-            data_list = []
-            with open(re.sub(r"_[0-9]*.npz$", "", filename) + ".pkl", "rb") as f:
-                norm_dict = pickle.load(f)
-                std = norm_dict["norm"]
-                mean = norm_dict["mean"]
-                if "scale_factor" in norm_dict:
-                    scale_factor = norm_dict["scale_factor"]
-                    mean_interp = F.interpolate(
-                        torch.from_numpy(mean), scale_factor=scale_factor, align_corners=False, mode="bilinear"
-                    ).numpy()
-                    std_interp = F.interpolate(
-                        torch.from_numpy(std), scale_factor=scale_factor, align_corners=False, mode="bilinear"
-                    ).numpy()
-                    std_interp[std_interp == 0] = 1
-                    mean_interp = np.squeeze(mean_interp)
-                    std_interp = np.squeeze(std_interp)
-                else:
-                    mean_interp = mean
-                    std_interp = std
+            meta = np.load(filename)
+            array = meta["data"].astype(np.float32)
 
-        meta = np.load(filename)
-        with open(filename.replace(".npz", ".pkl"), "rb") as f:
-            config = pickle.load(f)
+            config_ = config[filename.stem]
+            
+            vmax = config_["vmax"]
+            array = (array - vmax_uint) / vmax_uint * vmax
 
-        array = meta["data"].astype(np.float32)
-        vrange = config["vrange"]
-        array = array.astype(np.float32) / 255.0 * (vrange[1] - vrange[0]) + vrange[0]
+            if args.method == "wavelet":
+                coeffs = config_["coeffs"]
+                coeffs = pywt.array_to_coeffs(array, coeffs, output_format="wavedec2")
+                data = pywt.waverec2(coeffs, wavelet=config_["w"])
 
-        if args.method == "wavelet":
-            # config = {
-            #     "n": int(meta["n"]),
-            #     "w": meta["w"],
-            # }
-            coeffs = config["coeffs"]
-            coeffs = pywt.array_to_coeffs(array, coeffs, output_data_format="wavedec2")
-            data = pywt.waverec2(coeffs, wavelet=config["w"])
+            elif args.method == "curvelet":
+                func_fdct2 = pyct.fdct2(
+                    config_["n"], config_["nbs"], config_["nba"], config_["ac"], norm=False, vec=True, cpx=False
+                )
+                data = func_fdct2.inv(array)
 
-        elif args.method == "curvelet":
-            # config = {
-            #     "n": tuple([int(x) for x in meta["n"]]),
-            #     "nbs": int(meta["nbs"]),
-            #     "nba": int(meta["nba"]),
-            #     "ac": bool(meta["ac"]),
-            # }
-            func_fdct2 = pyct.fdct2(
-                config["n"], config["nbs"], config["nba"], config["ac"], norm=False, vec=True, cpx=False
-            )
-            data = func_fdct2.inv(array)
+            else:
+                raise ("method must be wavelet or curvelet")
 
-        else:
-            raise ("method must be wavelet or curvelet")
+            data_list.append(data)
 
-        data_list.append(data)
-        if args.plot_figure:
-            plot_result(args, os.path.join(args.figure_path, filename.split("/")[-1] + f"_{args.method}.png"), data)
+            if args.plot_figure:
+                plot_result(args, figure_path / f"{folder.name}_{filename.name}_{args.method}.png", data)
 
-    if len(data_list) > 0:
-        data_list = np.concatenate(data_list, axis=-1)
-        nx_, nt_ = data_list.shape
-        data_list = data_list * std_interp[:nx_, :nt_] + mean_interp[:nx_, :nt_]
-        with h5py.File(os.path.join(args.result_path, h5_name), "w") as f:
-            ## TODO: debug float64
+        data_list = np.concatenate(data_list, axis=-1).astype(np.float32)
+        if args.recover_amplitude:
+            nx_, nt_ = data_list.shape
+            data_list = data_list * std_interp[:nx_, :nt_] + mean_interp[:nx_, :nt_]
+        with h5py.File(result_path / folder.name, "w") as f:
             f.create_dataset("data", data=data_list)
 
 
@@ -406,7 +404,7 @@ def decompress_jpeg(args):
                 std_interp = np.squeeze(std_interp)
 
         data_list = []
-        for filename in tqdm(list(folder.glob("*.j2k")), desc=f"Decompressing (JPEG) {folder.name}"):
+        for filename in tqdm(sorted(list(folder.glob("*.j2k"))), desc=f"Decompressing (JPEG) {folder.name}"):
 
             data = iio.imread(filename, plugin="pillow", extension=".j2k")
 

@@ -7,11 +7,29 @@ python run.py --mode compress --data_path noise_data --data_format h5 --result_p
 python run.py --mode decompress --data_path results/compressed_noise/jpeg --result_path results/decompressed_noise --method=jpeg
 
 python CCTorch/run.py --data_list1=noise_data.txt --data_path=results/compressed_noise/jpeg/preprocess  --mode=AN  --block_size1 1 --block_size2 100 --fixed_channels 100 300 500 700 900  --dt=0.02 --maxlag=15  --result_path results/cctorch_preprocess_noise
-python CCTorch/tests/test_ambient_noise.py --result_path results/cctorch_preprocess_noise --figure_path figures/cctorch_preprocess_noise  --fixed_channels 100 300 500 700 900
+python CCTorch/tests/test_ambient_noise.py --result_path results/cctorch_preprocess_noise --figure_path results/cctorch_preprocess_noise  --fixed_channels 100 300 500 700 900
 
 python CCTorch/run.py --data_list1=noise_data.txt --data_path=results/decompressed_noise/jpeg  --mode=AN  --block_size1 1 --block_size2 100 --fixed_channels 100 300 500 700 900  --dt=0.02 --maxlag=15  --result_path results/cctorch_decompressed_noise
 python CCTorch/tests/test_ambient_noise.py --result_path results/cctorch_decompressed_noise --figure_path figures/cctorch_decompressed_noise  --fixed_channels 100 300 500 700 900
 
+
+python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=jpeg --save_preprocess --quality=80 --batch_nt 6000 --plot_figure
+python run.py --mode decompress --data_path results/compressed_noise/jpeg --result_path results/decompressed_noise --method=jpeg --plot_figure
+
+python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=wavelet --keep_ratio 0.01 --batch_nt 6000 --plot_figure 
+python run.py --mode decompress --data_path results/compressed_noise/wavelet --result_path results/decompressed_noise --method=wavelet --plot_figure
+
+
+
+python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=curvelet --keep_ratio 0.01 --batch_nt 6000 --plot_figure 
+python run.py --mode decompress --data_path results/compressed_noise/curvelet --result_path results/decompressed_noise --method=curvelet --plot_figure
+
+
+python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=wavelet --keep_ratio 1.0 --batch_nt 6000 --plot_figure 
+python run.py --mode decompress --data_path results/compressed_noise/wavelet --result_path results/decompressed_noise --method=wavelet --plot_figure
+
+python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=curvelet --keep_ratio 1.0 --batch_nt 6000 --plot_figure 
+python run.py --mode decompress --data_path results/compressed_noise/curvelet --result_path results/decompressed_noise --method=curvelet --plot_figure
 
 
 python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise/jpeg --method=jpeg --quality=50
