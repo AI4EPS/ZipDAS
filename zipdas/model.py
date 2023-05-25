@@ -1,519 +1,370 @@
-# Copyright 2018 Google LLC. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-"""Basic nonlinear transform coder for RGB images.
+import pyct ## put top bacause of segmentation fault
+import os
+import pickle
+from collections import defaultdict
+from pathlib import Path
 
-This is a close approximation of the image compression model published in:
-J. Ballé, V. Laparra, E.P. Simoncelli (2017):
-"End-to-end Optimized Image Compression"
-Int. Conf. on Learning Representations (ICLR), 2017
-https://arxiv.org/abs/1611.01704
+import h5py
 
-With patches from Victor Xing <victor.t.xing@gmail.com>
-
-This is meant as 'educational' code - you can use this to get started with your
-own experiments. To reproduce the exact results from the paper, tuning of hyper-
-parameters may be necessary. To compress images with published models, see
-`tfci.py`.
-
-This script requires TFC v2 (`pip install tensorflow-compression==2.*`).
-"""
-
-import argparse
-import glob
-import sys
-from absl import app
-from absl.flags import argparse_flags
-import tensorflow as tf
-import tensorflow_compression as tfc
-import tensorflow_datasets as tfds
+import imageio.v3 as iio
 import numpy as np
-import matplotlib.pyplot as plt
+import PIL
+# import pyct
+import pywt
+import torch
+import torch.nn.functional as F
+from tqdm.auto import tqdm
 
-def read_data(filename):
-  """Loads a PNG image file."""
+from .data import load_data
+from .utils import plot_result
 
-  if isinstance(filename, tf.Tensor):
-      filename = filename.numpy()
-  data = np.load(filename)["data"]
-  # data = (data - np.mean(data))/np.std(data)
-  data = (data - np.mean(data, axis=-1, keepdims=True))
-  std = np.std(data, axis=-1, keepdims=True)
-  # std = np.std(data)
-  std[std < 0.1] = 1
-  data = data/std
-  data = np.sign(data) * np.log(np.abs(data) + 1)
-
-  if np.random.random() > 0.5:
-      data = data[::-1, :]
-
-  # nc, nt = data.shape
-  # ic, it = np.random.randint(0, nc-256), np.random.randint(0, nt-256)
-  # return data[ic:ic+256, it:it+256]
-
-  return data[:, :, np.newaxis]
-
-
-def write_data(filename, image):
-  """Saves an image to a PNG file."""
-  # string = tf.image.encode_png(image)
-  # tf.io.write_file(filename, string)
-  if isinstance(image, tf.Tensor):
-      image = image.numpy()
-  plt.figure()
-  plt.imshow(image[:,:,0].T, vmin=-1.5, vmax=1.5, cmap="seismic")
-  # plt.imshow(image[:,:,0].T, cmap="seismic")
-  plt.colorbar()
-  plt.savefig(filename)
-
-class AnalysisTransform(tf.keras.Sequential):
-  """The analysis transform."""
-
-  def __init__(self, num_filters):
-    super().__init__(name="analysis")
-
-    # self.add(tfc.SignalConv2D(
-    #     num_filters, (9, 9), name="layer_0", corr=True, strides_down=4,
-    #     padding="same_zeros", use_bias=True,
-    #     activation=tfc.GDN(name="gdn_0")))
-    # self.add(tfc.SignalConv2D(
-    #     num_filters, (5, 5), name="layer_1", corr=True, strides_down=2,
-    #     padding="same_zeros", use_bias=True,
-    #     activation=tfc.GDN(name="gdn_1")))
-    # self.add(tfc.SignalConv2D(
-    #     num_filters, (5, 5), name="layer_2", corr=True, strides_down=2,
-    #     padding="same_zeros", use_bias=False,
-    #     activation=None))
-
-    self.add(tfc.SignalConv2D(
-        num_filters, (9, 9), name="layer_0", corr=True, strides_down=(4,4),
-        padding="same_zeros", use_bias=True,
-        activation=tfc.GDN(name="gdn_0")))
-    self.add(tfc.SignalConv2D(
-        num_filters, (5, 5), name="layer_1", corr=True, strides_down=(2,2),
-        padding="same_zeros", use_bias=True,
-        activation=tfc.GDN(name="gdn_1")))
-    self.add(tfc.SignalConv2D(
-        num_filters, (5, 5), name="layer_2", corr=True, strides_down=(2,2),
-        padding="same_zeros", use_bias=True,
-        activation=tfc.GDN(name="gdn_2")))
-    self.add(tfc.SignalConv2D(
-        num_filters, (5, 5), name="layer_3", corr=True, strides_down=(2,2),
-        padding="same_zeros", use_bias=False,
-        activation=None))
-
-class SynthesisTransform(tf.keras.Sequential):
-  """The synthesis transform."""
-
-  def __init__(self, num_filters):
-    super().__init__(name="synthesis")
-
-    # self.add(tfc.SignalConv2D(
-    #     num_filters, (5, 5), name="layer_0", corr=False, strides_up=2,
-    #     padding="same_zeros", use_bias=True,
-    #     activation=tfc.GDN(name="igdn_0", inverse=True)))
-    # self.add(tfc.SignalConv2D(
-    #     num_filters, (5, 5), name="layer_1", corr=False, strides_up=2,
-    #     padding="same_zeros", use_bias=True,
-    #     activation=tfc.GDN(name="igdn_1", inverse=True)))
-    # self.add(tfc.SignalConv2D(
-    #     1, (9, 9), name="layer_2", corr=False, strides_up=4,
-    #     padding="same_zeros", use_bias=True,
-    #     activation=None))
-
-    self.add(tfc.SignalConv2D(
-        num_filters, (5, 5), name="layer_3", corr=False, strides_up=(2,2),
-        padding="same_zeros", use_bias=True,
-        activation=tfc.GDN(name="igdn_3", inverse=True)))
-    self.add(tfc.SignalConv2D(
-        num_filters, (5, 5), name="layer_2", corr=False, strides_up=(2,2),
-        padding="same_zeros", use_bias=True,
-        activation=tfc.GDN(name="igdn_2", inverse=True)))
-    self.add(tfc.SignalConv2D(
-        num_filters, (5, 5), name="layer_1", corr=False, strides_up=(2,2),
-        padding="same_zeros", use_bias=True,
-        activation=tfc.GDN(name="igdn_1", inverse=True)))
-    self.add(tfc.SignalConv2D(
-        1, (9, 9), name="layer_0", corr=False, strides_up=(4,4),
-        padding="same_zeros", use_bias=False,
-        activation=None))
-
-class BLS2017Model(tf.keras.Model):
-  """Main model class."""
-
-  def __init__(self, lmbda, num_filters):
-    super().__init__()
-    self.lmbda = lmbda
-    self.analysis_transform = AnalysisTransform(num_filters)
-    self.synthesis_transform = SynthesisTransform(num_filters)
-    self.prior = tfc.NoisyDeepFactorized(batch_shape=(num_filters,))
-    self.build((None, None, None, 1))
-
-  def call(self, x, training):
-    """Computes rate and distortion losses."""
-    entropy_model = tfc.ContinuousBatchedEntropyModel(
-        self.prior, coding_rank=3, compression=False)
-    x = tf.cast(x, self.compute_dtype)  # TODO(jonycgn): Why is this necessary?
-    y = self.analysis_transform(x)
-    y_hat, bits = entropy_model(y, training=training)
-    x_hat = self.synthesis_transform(y_hat)
-    # x_hat = self.synthesis_transform(y)
-    # Total number of bits divided by total number of pixels.
-    num_pixels = tf.cast(tf.reduce_prod(tf.shape(x)[:-1]), bits.dtype)
-    bpp = tf.reduce_sum(bits) / num_pixels
-    # Mean squared error across pixels.
-    # mse = tf.reduce_mean(tf.math.squared_difference(x, x_hat))
-    mse = tf.reduce_mean(tf.abs(x - x_hat))
-    mse = tf.cast(mse, bpp.dtype)
-    # The rate-distortion Lagrangian.
-    loss = bpp + self.lmbda * mse
-    return loss, bpp, mse
-
-  def train_step(self, x):
-    with tf.GradientTape() as tape:
-      loss, bpp, mse = self(x, training=True)
-    variables = self.trainable_variables
-    gradients = tape.gradient(loss, variables)
-    self.optimizer.apply_gradients(zip(gradients, variables))
-    self.loss.update_state(loss)
-    self.bpp.update_state(bpp)
-    self.mse.update_state(mse)
-    return {m.name: m.result() for m in [self.loss, self.bpp, self.mse]}
-
-  def test_step(self, x):
-    loss, bpp, mse = self(x, training=False)
-    self.loss.update_state(loss)
-    self.bpp.update_state(bpp)
-    self.mse.update_state(mse)
-    return {m.name: m.result() for m in [self.loss, self.bpp, self.mse]}
-
-  def predict_step(self, x):
-    raise NotImplementedError("Prediction API is not supported.")
-
-  def compile(self, **kwargs):
-    super().compile(
-        loss=None,
-        metrics=None,
-        loss_weights=None,
-        weighted_metrics=None,
-        **kwargs,
-    )
-    self.loss = tf.keras.metrics.Mean(name="loss")
-    self.bpp = tf.keras.metrics.Mean(name="bpp")
-    self.mse = tf.keras.metrics.Mean(name="mse")
-
-  def fit(self, *args, **kwargs):
-    retval = super().fit(*args, **kwargs)
-    # After training, fix range coding tables.
-    self.entropy_model = tfc.ContinuousBatchedEntropyModel(
-        self.prior, coding_rank=3, compression=True)
-    return retval
-
-  @tf.function(input_signature=[
-      tf.TensorSpec(shape=(None, None, 1), dtype=tf.float32),
-  ])
-  def compress(self, x):
-    """Compresses an image."""
-    # Add batch dimension and cast to float.
-    x = tf.expand_dims(x, 0)
-    x = tf.cast(x, dtype=self.compute_dtype)
-    y = self.analysis_transform(x)
-    # Preserve spatial shapes of both image and latents.
-    x_shape = tf.shape(x)[1:-1]
-    y_shape = tf.shape(y)[1:-1]
-    return self.entropy_model.compress(y), x_shape, y_shape
-
-  @tf.function(input_signature=[
-      tf.TensorSpec(shape=(1,), dtype=tf.string),
-      tf.TensorSpec(shape=(2,), dtype=tf.int32),
-      tf.TensorSpec(shape=(2,), dtype=tf.int32),
-  ])
-  def decompress(self, string, x_shape, y_shape):
-    """Decompresses an image."""
-    y_hat = self.entropy_model.decompress(string, y_shape)
-    x_hat = self.synthesis_transform(y_hat)
-    # Remove batch dimension, and crop away any extraneous padding.
-    x_hat = x_hat[0, :x_shape[0], :x_shape[1], :]
-    # Then cast back to 8-bit integer.
-    # return tf.saturate_cast(tf.round(x_hat), tf.uint8)
-    return x_hat
-
-
-def check_image_size(image, patchsize):
-  shape = tf.shape(image)
-  return shape[0] >= patchsize and shape[1] >= patchsize and shape[-1] == 3
-
-
-def crop_image(image, patchsize):
-  # image = tf.image.random_crop(image, (patchsize, patchsize, 3))
-  image = tf.image.random_crop(image, (patchsize, patchsize, 1))
-  return tf.cast(image, tf.keras.mixed_precision.global_policy().compute_dtype)
-
-
-def get_dataset(name, split, args):
-  """Creates input data pipeline from a TF Datasets dataset."""
-  with tf.device("/cpu:0"):
-    dataset = tfds.load(name, split=split, shuffle_files=True)
-    if split == "train":
-      dataset = dataset.repeat()
-    dataset = dataset.filter(
-        lambda x: check_image_size(x["image"], args.patchsize))
-    dataset = dataset.map(
-        lambda x: crop_image(x["image"], args.patchsize))
-    dataset = dataset.batch(args.batchsize, drop_remainder=True)
-  return dataset
-
-
-def get_custom_dataset(split, args):
-  """Creates input data pipeline from custom PNG images."""
-  with tf.device("/cpu:0"):
-    files = glob.glob(args.train_glob)
-    if not files:
-      raise RuntimeError(f"No training images found with glob "
-                         f"'{args.train_glob}'.")
-    dataset = tf.data.Dataset.from_tensor_slices(files)
-    dataset = dataset.shuffle(len(files), reshuffle_each_iteration=True)
-    if split == "train":
-      dataset = dataset.repeat()
-    dataset = dataset.map(
-        lambda x: crop_image(
-          # read_png(x),
-          tf.py_function(read_data, [x], tf.float32),
-          args.patchsize),
-        # lambda x: crop_image(read_png(x), args.patchsize),
-        num_parallel_calls=args.preprocess_threads)
-    dataset = dataset.batch(args.batchsize, drop_remainder=True)
-  return dataset
-
-
-def train(args):
-  """Instantiates and trains the model."""
-  if args.precision_policy:
-    tf.keras.mixed_precision.set_global_policy(args.precision_policy)
-  if args.check_numerics:
-    tf.debugging.enable_check_numerics()
-
-  model = BLS2017Model(args.lmbda, args.num_filters)
-  model.compile(
-      optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
-  )
-
-  if args.train_glob:
-    train_dataset = get_custom_dataset("train", args)
-    validation_dataset = get_custom_dataset("validation", args)
-  else:
-    train_dataset = get_dataset("clic", "train", args)
-    validation_dataset = get_dataset("clic", "validation", args)
-  validation_dataset = validation_dataset.take(args.max_validation_steps)
-
-  model.fit(
-      train_dataset.prefetch(8),
-      epochs=args.epochs,
-      steps_per_epoch=args.steps_per_epoch,
-      validation_data=validation_dataset.cache(),
-      validation_freq=1,
-      callbacks=[
-          tf.keras.callbacks.TerminateOnNaN(),
-          tf.keras.callbacks.TensorBoard(
-              log_dir=args.train_path,
-              histogram_freq=1, update_freq="epoch"),
-          tf.keras.callbacks.BackupAndRestore(args.train_path),
-      ],
-      verbose=int(args.verbose),
-  )
-  model.save(args.model_path)
+PIL.Image.MAX_IMAGE_PIXELS = None
 
 
 def compress(args):
-  """Compresses an image."""
-  # Load model and use it to compress the image.
-  model = tf.keras.models.load_model(args.model_path)
-  x = read_data(args.input_file)
-  write_data(args.input_file+".png", x)
-  tensors = model.compress(x)
 
-  # Write a binary file with the shape information and the compressed string.
-  packed = tfc.PackedTensors()
-  packed.pack(tensors)
-  with open(args.output_file, "wb") as f:
-    f.write(packed.string)
+    dataset = load_data(args)
+    keep_ratio = args.keep_ratio
+    result_path = Path(args.result_path)
+    if args.plot_figure:
+        figure_path = Path(args.figure_path)
+    if args.save_preprocess:
+        preprocess_path = Path(args.preprocess_path)
 
-  # If requested, decompress the image and measure performance.
-  if args.verbose:
-    x_hat = model.decompress(*tensors)
-    write_data(args.input_file+"_verbose.png", x_hat)
+    for meta in dataset:
 
-    # Cast to float in order to compute metrics.
-    x = tf.cast(x, tf.float32)
-    x_hat = tf.cast(x_hat, tf.float32)
-    # mse = tf.reduce_mean(tf.math.squared_difference(x, x_hat))
-    mse = tf.reduce_mean(tf.abs(x - x_hat))
-    psnr = tf.squeeze(tf.image.psnr(x, x_hat, 255))
-    msssim = tf.squeeze(tf.image.ssim_multiscale(x, x_hat, 255))
-    msssim_db = -10. * tf.math.log(1 - msssim) / tf.math.log(10.)
+        filename = meta["filename"]
+        basename = filename.split("/")[-1]
 
-    # The actual bits per pixel including entropy coding overhead.
-    num_pixels = tf.reduce_prod(tf.shape(x)[:-1])
-    bpp = len(packed.string) * 8 / num_pixels
+        if not (result_path / basename).exists():
+            (result_path / basename).mkdir(parents=True)
 
-    print(f"Mean squared error: {mse:0.4f}")
-    print(f"PSNR (dB): {psnr:0.2f}")
-    print(f"Multiscale SSIM: {msssim:0.4f}")
-    print(f"Multiscale SSIM (dB): {msssim_db:0.2f}")
-    print(f"Bits per pixel: {bpp:0.4f}")
+        if args.save_preprocess:
+            with h5py.File(preprocess_path / basename, "w") as f:
+                f.create_dataset("data", data=meta["data"])
+
+        nx, nt = meta["data"].shape
+        if "vmax_uint" in meta:
+            vmax_uint = meta["vmax_uint"]
+        else:
+            vmax_uint = 2**15 - 1
+
+        config = defaultdict(dict)
+        for i in tqdm(range(0, nt, args.batch_nt), desc=f"Compressing ({args.method}) {basename}"):
+
+            data = meta["data"][:, i : i + args.batch_nt]
+
+            if args.plot_figure:
+                plot_result(
+                    args,
+                    figure_path / f"{basename}_{i:06d}.png",
+                    data,
+                )
+
+            if args.method == "wavelet":
+                config[f"{i:06d}"] = {
+                    "n": 4,
+                    "w": "db1",
+                }
+
+                coeffs = pywt.wavedec2(data, wavelet=config[f"{i:06d}"]["w"], level=config[f"{i:06d}"]["n"])
+                array, coeffs = pywt.coeffs_to_array(coeffs)
+                config[f"{i:06d}"]["coeffs"] = coeffs
+
+            elif args.method == "curvelet":
+                config[f"{i:06d}"] = {
+                    "n": data.shape,
+                    "nbs": 3,
+                    "nba": 1,
+                    "ac": False,
+                }
+                func_fdct2 = pyct.fdct2(
+                    config[f"{i:06d}"]["n"],
+                    config[f"{i:06d}"]["nbs"],
+                    config[f"{i:06d}"]["nba"],
+                    config[f"{i:06d}"]["ac"],
+                    norm=False,
+                    vec=True,
+                    cpx=False,
+                )
+                array = func_fdct2.fwd(data)
+
+            else:
+                config[f"{i:06d}"] = {}
+                raise ("method must be wavelet or curvelet")
+
+            topk = int(array.size * (1 - keep_ratio))
+            array_1d = np.abs(array.reshape(-1))
+            threshold = array_1d[np.argpartition(array_1d, topk)[topk]]
+            array_filt = array * (np.abs(array) >= threshold)
+
+            vmax = np.max(np.abs(array_filt))
+            array_unit = array_filt / vmax * vmax_uint + vmax_uint
+            array_unit = array_unit.astype(np.uint16)
+
+            config[f"{i:06d}"]["vmax"] = vmax
+
+            np.savez_compressed(
+                result_path / basename / f"{i:06d}.npz",
+                data=array_unit,
+            )
+
+        with open((str(result_path / basename) + ".pkl"), "wb") as f:
+            tmp = {"mean": meta["mean"], "norm": meta["norm"]}
+            if "scale_factor" in meta:
+                tmp["scale_factor"] = meta["scale_factor"]
+            tmp["vmax_uint"] = vmax_uint
+            tmp["config"] = config
+            pickle.dump(tmp, f)
 
 
 def decompress(args):
-  """Decompresses an image."""
-  # Load the model and determine the dtypes of tensors required to decompress.
-  model = tf.keras.models.load_model(args.model_path)
-  dtypes = [t.dtype for t in model.decompress.input_signature]
 
-  # Read the shape information and compressed string from the binary file,
-  # and decompress the image using the model.
-  with open(args.input_file, "rb") as f:
-    packed = tfc.PackedTensors(f.read())
-  tensors = packed.unpack(dtypes)
-  x_hat = model.decompress(*tensors)
+    data_path = Path(args.data_path)
+    result_path = Path(args.result_path)
+    if args.plot_figure:
+        figure_path = Path(args.figure_path)
 
-  # Write reconstructed image out as a PNG file.
-  write_data(args.output_file, x_hat)
+    for folder in data_path.glob(f"*.{args.data_format}"):
 
+        with open(str(folder) + ".pkl", "rb") as f:
+            norm_dict = pickle.load(f)
+            config = norm_dict["config"]
+            std = norm_dict["norm"]
+            mean = norm_dict["mean"]
+            vmax_uint = norm_dict["vmax_uint"]
+            if args.recover_amplitude:
+                scale_factor = norm_dict["scale_factor"]
+                mean_interp = F.interpolate(
+                    torch.from_numpy(mean), scale_factor=scale_factor, align_corners=False, mode="bilinear"
+                ).numpy()
+                std_interp = F.interpolate(
+                    torch.from_numpy(std), scale_factor=scale_factor, align_corners=False, mode="bilinear"
+                ).numpy()
+                std_interp[std_interp == 0] = 1
+                mean_interp = np.squeeze(mean_interp)
+                std_interp = np.squeeze(std_interp)
 
-def parse_args(argv):
-  """Parses command line arguments."""
-  parser = argparse_flags.ArgumentParser(
-      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+        data_list = []
+        for filename in tqdm(sorted(list(folder.glob("*.npz"))), desc=f"Decompressing ({args.method}) {folder.name}"):
 
-  # High-level options.
-  parser.add_argument(
-      "--verbose", "-V", action="store_true",
-      help="Report progress and metrics when training or compressing.")
-  parser.add_argument(
-      "--model_path", default="bls2017",
-      help="Path where to save/load the trained model.")
-  subparsers = parser.add_subparsers(
-      title="commands", dest="command",
-      help="What to do: 'train' loads training data and trains (or continues "
-           "to train) a new model. 'compress' reads an image file (lossless "
-           "PNG format) and writes a compressed binary file. 'decompress' "
-           "reads a binary file and reconstructs the image (in PNG format). "
-           "input and output filenames need to be provided for the latter "
-           "two options. Invoke '<command> -h' for more information.")
+            meta = np.load(filename)
+            array = meta["data"].astype(np.float32)
 
-  # 'train' subcommand.
-  train_cmd = subparsers.add_parser(
-      "train",
-      formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-      description="Trains (or continues to train) a new model. Note that this "
-                  "model trains on a continuous stream of patches drawn from "
-                  "the training image dataset. An epoch is always defined as "
-                  "the same number of batches given by --steps_per_epoch. "
-                  "The purpose of validation is mostly to evaluate the "
-                  "rate-distortion performance of the model using actual "
-                  "quantization rather than the differentiable proxy loss. "
-                  "Note that when using custom training images, the validation "
-                  "set is simply a random sampling of patches from the "
-                  "training set.")
-  train_cmd.add_argument(
-      "--lambda", type=float, default=100, dest="lmbda",
-      help="Lambda for rate-distortion tradeoff.")
-  train_cmd.add_argument(
-      "--train_glob", type=str, default=None,
-      help="Glob pattern identifying custom training data. This pattern must "
-           "expand to a list of RGB images in PNG format. If unspecified, the "
-           "CLIC dataset from TensorFlow Datasets is used.")
-  train_cmd.add_argument(
-      "--num_filters", type=int, default=128,
-      help="Number of filters per layer.")
-  train_cmd.add_argument(
-      "--train_path", default="/tmp/train_bls2017",
-      help="Path where to log training metrics for TensorBoard and back up "
-           "intermediate model checkpoints.")
-  train_cmd.add_argument(
-      "--batchsize", type=int, default=8,
-      help="Batch size for training and validation.")
-  train_cmd.add_argument(
-      "--patchsize", type=int, default=256,
-      help="Size of image patches for training and validation.")
-  train_cmd.add_argument(
-      "--epochs", type=int, default=20,
-      help="Train up to this number of epochs. (One epoch is here defined as "
-           "the number of steps given by --steps_per_epoch, not iterations "
-           "over the full training dataset.)")
-  train_cmd.add_argument(
-      "--steps_per_epoch", type=int, default=1000,
-      help="Perform validation and produce logs after this many batches.")
-  train_cmd.add_argument(
-      "--max_validation_steps", type=int, default=-1,
-      help="Maximum number of batches to use for validation. If -1, use one "
-           "patch from each image in the training set.")
-  train_cmd.add_argument(
-      "--preprocess_threads", type=int, default=16,
-      help="Number of CPU threads to use for parallel decoding of training "
-           "images.")
-  train_cmd.add_argument(
-      "--precision_policy", type=str, default=None,
-      help="Policy for `tf.keras.mixed_precision` training.")
-  train_cmd.add_argument(
-      "--check_numerics", action="store_true",
-      help="Enable TF support for catching NaN and Inf in tensors.")
+            config_ = config[filename.stem]
 
-  # 'compress' subcommand.
-  compress_cmd = subparsers.add_parser(
-      "compress",
-      formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-      description="Reads a PNG file, compresses it, and writes a TFCI file.")
+            vmax = config_["vmax"]
+            array = (array - vmax_uint) / vmax_uint * vmax
 
-  # 'decompress' subcommand.
-  decompress_cmd = subparsers.add_parser(
-      "decompress",
-      formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-      description="Reads a TFCI file, reconstructs the image, and writes back "
-                  "a PNG file.")
+            if args.method == "wavelet":
+                coeffs = config_["coeffs"]
+                coeffs = pywt.array_to_coeffs(array, coeffs, output_format="wavedec2")
+                data = pywt.waverec2(coeffs, wavelet=config_["w"])
 
-  # Arguments for both 'compress' and 'decompress'.
-  for cmd, ext in ((compress_cmd, ".tfci"), (decompress_cmd, ".png")):
-    cmd.add_argument(
-        "input_file",
-        help="Input filename.")
-    cmd.add_argument(
-        "output_file", nargs="?",
-        help=f"Output filename (optional). If not provided, appends '{ext}' to "
-             f"the input filename.")
+            elif args.method == "curvelet":
+                func_fdct2 = pyct.fdct2(
+                    config_["n"], config_["nbs"], config_["nba"], config_["ac"], norm=False, vec=True, cpx=False
+                )
+                data = func_fdct2.inv(array)
 
-  # Parse arguments.
-  args = parser.parse_args(argv[1:])
-  if args.command is None:
-    parser.print_usage()
-    sys.exit(2)
-  return args
+            else:
+                raise ("method must be wavelet or curvelet")
+
+            data_list.append(data)
+
+            if args.plot_figure:
+                plot_result(args, figure_path / f"{folder.name}_{filename.name}_{args.method}.png", data)
+
+        data_list = np.concatenate(data_list, axis=-1).astype(np.float32)
+        if args.recover_amplitude:
+            nx_, nt_ = data_list.shape
+            data_list = data_list * std_interp[:nx_, :nt_] + mean_interp[:nx_, :nt_]
+        with h5py.File(result_path / folder.name, "w") as f:
+            f.create_dataset("data", data=data_list)
 
 
-def main(args):
-  # Invoke subcommand.
-  if args.command == "train":
-    train(args)
-  elif args.command == "compress":
-    if not args.output_file:
-      args.output_file = args.input_file + ".tfci"
-    compress(args)
-  elif args.command == "decompress":
-    if not args.output_file:
-      args.output_file = args.input_file + ".png"
-    decompress(args)
+def compress_jpeg(args):
+
+    dataset = load_data(args)
+    quality = args.quality
+    result_path = Path(args.result_path)
+    if args.plot_figure:
+        figure_path = Path(args.figure_path)
+    if args.save_preprocess:
+        preprocess_path = Path(args.preprocess_path)
+
+    for meta in dataset:
+
+        filename = meta["filename"]
+        basename = filename.split("/")[-1]
+
+        if not (result_path / basename).exists():
+            (result_path / basename).mkdir(parents=True)
+
+        if args.save_preprocess:
+            with h5py.File(preprocess_path / basename, "w") as f:
+                f.create_dataset("data", data=meta["data"])
+
+        nx, nt = meta["data"].shape
+        if "vmax_abs" in meta:
+            vmax_abs = meta["vmax_abs"]
+        else:
+            vmax_abs = np.max(np.abs(meta["data"]))
+        if "vmax_uint" in meta:
+            vmax_uint = meta["vmax_uint"]
+        else:
+            vmax_uint = 2**15 - 1
+
+        for i in tqdm(range(0, nt, args.batch_nt), desc=f"Compressing (JPEG) {basename}"):
+
+            data = meta["data"][:, i : i + args.batch_nt]
+
+            data = (data / vmax_abs) * vmax_uint + vmax_uint
+            data_uint = data.astype(np.uint16)
+
+            if args.plot_figure:
+                plot_result(
+                    args,
+                    figure_path / f"{basename}_{i:06d}.png",
+                    data_uint,
+                )
+
+            iio.imwrite(
+                result_path / basename / f"{i:06d}.j2k",
+                data_uint,
+                plugin="pillow",
+                extension=".j2k",
+                quality_mode="rates",
+                quality_layers=[quality],
+                irreversible=True,
+            )
+
+        with open((str(result_path / basename) + ".pkl"), "wb") as f:
+            tmp = {"mean": meta["mean"], "norm": meta["norm"]}
+            if "scale_factor" in meta:
+                tmp["scale_factor"] = meta["scale_factor"]
+            if "vmax_abs" in meta:
+                tmp["vmax_abs"] = meta["vmax_abs"]
+            else:
+                tmp["vmax_abs"] = vmax_abs
+            if "vmax_uint" in meta:
+                tmp["vmax_uint"] = meta["vmax_uint"]
+            else:
+                tmp["vmax_uint"] = vmax_uint
+            pickle.dump(tmp, f)
 
 
-if __name__ == "__main__":
-  app.run(main, flags_parser=parse_args)
+def decompress_jpeg(args):
+
+    data_path = Path(args.data_path)
+    result_path = Path(args.result_path)
+    if args.plot_figure:
+        figure_path = Path(args.figure_path)
+
+    for folder in data_path.glob(f"*.{args.data_format}"):
+
+        with open(str(folder) + ".pkl", "rb") as f:
+            norm_dict = pickle.load(f)
+            std = norm_dict["norm"]
+            mean = norm_dict["mean"]
+            vmax_uint = norm_dict["vmax_uint"]
+            vmax_abs = norm_dict["vmax_abs"]
+            if args.recover_amplitude:
+                scale_factor = norm_dict["scale_factor"]
+                mean_interp = F.interpolate(
+                    torch.from_numpy(mean), scale_factor=scale_factor, align_corners=False, mode="bilinear"
+                ).numpy()
+                std_interp = F.interpolate(
+                    torch.from_numpy(std), scale_factor=scale_factor, align_corners=False, mode="bilinear"
+                ).numpy()
+                std_interp[std_interp == 0] = 1
+                mean_interp = np.squeeze(mean_interp)
+                std_interp = np.squeeze(std_interp)
+
+        data_list = []
+        for filename in tqdm(sorted(list(folder.glob("*.j2k"))), desc=f"Decompressing (JPEG) {folder.name}"):
+
+            data = iio.imread(filename, plugin="pillow", extension=".j2k")
+
+            data_list.append(data)
+
+            if args.plot_figure:
+                plot_result(args, figure_path / f"{folder.name}_{filename.name}_{args.method}.png", data)
+
+        data_list = np.concatenate(data_list, axis=-1).astype(np.float32)
+        data_list = (data_list - vmax_uint) / vmax_uint * vmax_abs
+        if args.recover_amplitude:
+            nx_, nt_ = data_list.shape
+            data_list = data_list * std_interp[:nx_, :nt_] + mean_interp[:nx_, :nt_]
+        with h5py.File(result_path / folder.name, "w") as f:
+            f.create_dataset("data", data=data_list)
+
+
+def compress_neural(args, model, dtypes):
+
+    dataset = load_data(args)
+
+    nt = args.batch_window
+
+    for meta in dataset:
+        data = meta["data"].unsqueeze(0)
+        filename = meta["filename"]
+
+        vectors = []
+        x_shape = []
+        y_shape = []
+
+        data = tf.convert_to_tensor(data, dtype=tf.float32)
+        nc, h, w = data.shape
+        for i in tqdm(range(0, w, nt), desc=f"Compressing {filename.split('/')[-1]}"):
+            data_slice = data[:, :, i : i + nt]
+
+            if args.plot_figure:
+                plot_result(
+                    args,
+                    os.path.join(args.figure_path, filename.split("/")[-1] + f"_{i//nt:02d}.png"),
+                    np.transpose(data_slice, (1, 2, 0)),
+                )
+
+            data_slice = tf.transpose(data_slice, perm=(1, 2, 0))
+            tensors = model.compress(data_slice)
+            vectors.append(tensors[0])
+            x_shape.append(tensors[1])
+            y_shape.append(tensors[2])
+
+        vectors = tf.concat(vectors, axis=0)
+        x_shape = tf.concat(x_shape, axis=0)
+        y_shape = tf.concat(y_shape, axis=0)
+
+        packed = tfc.PackedTensors()
+        packed.pack((vectors, x_shape, y_shape))
+        with open(os.path.join(args.result_path, filename.split("/")[-1] + ".tfci"), "wb") as f:
+            f.write(packed.string)
+
+
+def decompress_neural(args, model, dtypes):
+
+    files = sorted(list(glob(args.data_path + "/*.tfci")))
+
+    for filename in files:
+
+        with open(filename, "rb") as f:
+            packed = tfc.PackedTensors(f.read())
+
+        tensors = packed.unpack(dtypes)
+
+        data = []
+        for i in tqdm(range(len(tensors[0])), desc=f"Decompressing {filename.split('/')[-1]}"):
+            x_hat = model.decompress(
+                tensors[0][i : i + 1], tensors[1][i * 2 : i * 2 + 2], tensors[2][i * 2 : i * 2 + 2]
+            )
+
+            if args.plot_figure:
+                plot_result(args, os.path.join(args.figure_path, filename.split("/")[-1] + f"_{i:02d}.png"), x_hat)
+
+            data.append(x_hat)
+
+        data = tf.concat(data, axis=1)[:, :, 0]
+        write_data(args, filename, data)
+
+    return 0
