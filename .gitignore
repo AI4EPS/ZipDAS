@@ -27,3 +27,10 @@ tests/comp_curvelet/swig-4.1.1
 *.png
 *.jpg
 *.j2k
+*.pkl
+*.txt
+*.npz
+*.json
+*.pdf
+*.DS_Store
+cctorch.log
