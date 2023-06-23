@@ -1,78 +1,87 @@
 # ZipDAS: Distributed Acoustic Sensing Data Compression
 
-python CCTorch/run.py --data_list1=noise_data.txt --data_path=noise_data  --mode=AN  --block_size1 1 --block_size2 100 --fixed_channels 100 300 500 700 900  --dt=0.02 --maxlag=15 --temporal_gradient --result_path results/cctorch_noise
-python CCTorch/tests/test_ambient_noise.py --result_path results/cctorch_noise --figure_path figures/cctorch_noise  --fixed_channels 100 300 500 700 900
 
-python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=jpeg --save_preprocess --quality=80
-python run.py --mode decompress --data_path results/compressed_noise/jpeg --result_path results/decompressed_noise --method=jpeg
+## Installation
 
-python CCTorch/run.py --data_list1=noise_data.txt --data_path=results/compressed_noise/jpeg/preprocess  --mode=AN  --block_size1 1 --block_size2 100 --fixed_channels 100 300 500 700 900  --dt=0.02 --maxlag=15  --result_path results/cctorch_preprocess_noise
-python CCTorch/tests/test_ambient_noise.py --result_path results/cctorch_preprocess_noise --figure_path results/cctorch_preprocess_noise  --fixed_channels 100 300 500 700 900
+```
+pip install -r requirements.txt
+```
 
-python CCTorch/run.py --data_list1=noise_data.txt --data_path=results/decompressed_noise/jpeg  --mode=AN  --block_size1 1 --block_size2 100 --fixed_channels 100 300 500 700 900  --dt=0.02 --maxlag=15  --result_path results/cctorch_decompressed_noise
-python CCTorch/tests/test_ambient_noise.py --result_path results/cctorch_decompressed_noise --figure_path figures/cctorch_decompressed_noise  --fixed_channels 100 300 500 700 900
+## Usage
 
+### Compression using Wavelet (JPEG2000)
 
-python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=jpeg --save_preprocess --quality=80 --batch_nt 6000 --plot_figure
+```
+python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=jpeg --save_preprocess --quality=80 --plot_figure
+```
+```
 python run.py --mode decompress --data_path results/compressed_noise/jpeg --result_path results/decompressed_noise --method=jpeg --plot_figure
-
-python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=wavelet --keep_ratio 0.01 --batch_nt 6000 --plot_figure 
-python run.py --mode decompress --data_path results/compressed_noise/wavelet --result_path results/decompressed_noise --method=wavelet --plot_figure
-
-
-
-python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=curvelet --keep_ratio 0.01 --batch_nt 6000 --plot_figure 
-python run.py --mode decompress --data_path results/compressed_noise/curvelet --result_path results/decompressed_noise --method=curvelet --plot_figure
-
-
-python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=wavelet --keep_ratio 1.0 --batch_nt 6000 --plot_figure 
-python run.py --mode decompress --data_path results/compressed_noise/wavelet --result_path results/decompressed_noise --method=wavelet --plot_figure
-
-python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=curvelet --keep_ratio 1.0 --batch_nt 6000 --plot_figure 
-python run.py --mode decompress --data_path results/compressed_noise/curvelet --result_path results/decompressed_noise --method=curvelet --plot_figure
-
-
-python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise/jpeg --method=jpeg --quality=50
-
-python run.py --mode decompress --data_path results/compressed_noise/jpeg --result_path results/decompressed_noise/jpeg --method=jpeg
-
-python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=jpeg --quality=24 --batch_nt=12000 && python run.py --mode decompress --data_path results/compressed_noise/jpeg --result_path results/decompressed_noise --method=jpeg  --plot_figure
-
-python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=jpeg --quality=24 --plot_figure --batch_nt=12000 && python run.py --mode decompress --data_path results/compressed_noise/jpeg --result_path results/decompressed_noise --method=jpeg  --plot_figure
-
-python run.py --mode compress --data_path event_data --data_format h5 --result_path results/compressed_event --method=jpeg --quality=10 && python run.py --mode decompress --data_path results/compressed_event/jpeg --result_path results/decompressed_event --method=jpeg  --plot_figure
-
-## Compression
-```
-python run.py --model_path model --mode compress --data_path tests/data --format h5 --result_path compressed --plot_figure
 ```
 
-## Decompression
+### Compression using Neural Network models
+
+To use GPU acceleration, please follow this instruction: https://www.tensorflow.org/install/pip
+
+*Compression and decompression:*
 ```
-python run.py --model_path model --mode decompress --data_path compressed --result_path decompressed --plot_figure
+python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=neural  --model_path=model --batch_nt=10240  --plot_figure
+```
+```
+python run.py --mode decompress --data_path results/compressed_noise/neural --result_path results/neural/decompressed_noise --method=neural --model_path model --plot_figure
 ```
 
-## Training:
+*Training:*
 ```
-python train.py  --model_path model  --data_path tests/data --result_path training --format=h5
+python train.py  --model_path model  --data_path noise_data --result_path training --format=h5
 ```
-
-## Test:
+*Test:*
 ```
 python train.py --mode test  --model_path model  --data_path tests/data --result_path tmp --format=h5 --batch 0 --nt 2048
 ```
 
-## Run CCTorch:
+### Optional: Compression using Curvelet
+
 ```
-python run.py --data-list1=test_decompressed.txt --data-path=../decompressed --dt=0.04 --maxlag=30  --mode=AN  --block-size1 1300 --block-size2 1300 --fixed-channels 300 500 700 900  --log-interval 1 --result-path results_decompressed
+python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=curvelet --keep_ratio 0.01 --batch_nt 6000 --plot_figure 
+```
+```
+python run.py --mode decompress --data_path results/compressed_noise/curvelet --result_path results/decompressed_noise --method=curvelet --plot_figure
 ```
 
-## Install Python Packages
+<!-- ```
+python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=wavelet --keep_ratio 0.01 --batch_nt 6000 --plot_figure 
 ```
-pip install imageio, pillow
+```
+python run.py --mode decompress --data_path results/compressed_noise/wavelet --result_path results/decompressed_noise --method=wavelet --plot_figure
+``` -->
+
+## Application: Ambient Noise
+
+*Raw data:*
+```
+python CCTorch/run.py --data_list1=noise_data.txt --data_path=noise_data  --mode=AN  --block_size1 1 --block_size2 100 --fixed_channels 100 300 500 700 900  --dt=0.02 --maxlag=15 --temporal_gradient --result_path results/cctorch_noise
+```
+```
+python CCTorch/tests/test_ambient_noise.py --result_path results/cctorch_noise --figure_path figures/cctorch_noise  --fixed_channels 100 300 500 700 900
 ```
 
-## Install PyCurvelab
+<!-- *Preprocess data*
+```
+python CCTorch/run.py --data_list1=noise_data.txt --data_path=results/compressed_noise/jpeg/preprocess  --mode=AN  --block_size1 1 --block_size2 100 --fixed_channels 100 300 500 700 900  --dt=0.02 --maxlag=15  --result_path results/cctorch_preprocess_noise
+```
+```
+python CCTorch/tests/test_ambient_noise.py --result_path results/cctorch_preprocess_noise --figure_path results/cctorch_preprocess_noise  --fixed_channels 100 300 500 700 900
+``` -->
+
+*Compressed data:*
+```
+python CCTorch/run.py --data_list1=noise_data.txt --data_path=results/decompressed_noise/jpeg  --mode=AN  --block_size1 1 --block_size2 100 --fixed_channels 100 300 500 700 900  --dt=0.02 --maxlag=15  --result_path results/cctorch_decompressed_noise
+```
+```
+python CCTorch/tests/test_ambient_noise.py --result_path results/cctorch_decompressed_noise --figure_path figures/cctorch_decompressed_noise  --fixed_channels 100 300 500 700 900
+```
+
+## Optional: Install PyCurvelab for curvelet compression
 
 [FFTW 2.1.5](https://www.fftw.org/)
 
@@ -113,7 +122,65 @@ python setup.py build install
 ```
 
 
-## Experiments
+<!-- python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=jpeg --save_preprocess --quality=80 --batch_nt 6000 --plot_figure
+python run.py --mode decompress --data_path results/compressed_noise/jpeg --result_path results/decompressed_noise --method=jpeg --plot_figure
+
+python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=wavelet --keep_ratio 0.01 --batch_nt 6000 --plot_figure 
+python run.py --mode decompress --data_path results/compressed_noise/wavelet --result_path results/decompressed_noise --method=wavelet --plot_figure
+
+python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=curvelet --keep_ratio 0.01 --batch_nt 6000 --plot_figure 
+python run.py --mode decompress --data_path results/compressed_noise/curvelet --result_path results/decompressed_noise --method=curvelet --plot_figure
+
+
+python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=wavelet --keep_ratio 1.0 --batch_nt 6000 --plot_figure 
+python run.py --mode decompress --data_path results/compressed_noise/wavelet --result_path results/decompressed_noise --method=wavelet --plot_figure
+
+python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=curvelet --keep_ratio 1.0 --batch_nt 6000 --plot_figure 
+python run.py --mode decompress --data_path results/compressed_noise/curvelet --result_path results/decompressed_noise --method=curvelet --plot_figure
+
+
+python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise/jpeg --method=jpeg --quality=50
+
+python run.py --mode decompress --data_path results/compressed_noise/jpeg --result_path results/decompressed_noise/jpeg --method=jpeg
+
+python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=jpeg --quality=24 --batch_nt=12000 && python run.py --mode decompress --data_path results/compressed_noise/jpeg --result_path results/decompressed_noise --method=jpeg  --plot_figure
+
+python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=jpeg --quality=24 --plot_figure --batch_nt=12000 && python run.py --mode decompress --data_path results/compressed_noise/jpeg --result_path results/decompressed_noise --method=jpeg  --plot_figure
+
+python run.py --mode compress --data_path event_data --data_format h5 --result_path results/compressed_event --method=jpeg --quality=10 && python run.py --mode decompress --data_path results/compressed_event/jpeg --result_path results/decompressed_event --method=jpeg  --plot_figure -->
+
+<!-- ## Compression
+```
+python run.py --model_path model --mode compress --data_path tests/data --format h5 --result_path compressed --plot_figure
+```
+
+## Decompression
+```
+python run.py --model_path model --mode decompress --data_path compressed --result_path decompressed --plot_figure
+```
+
+## Training:
+```
+python train.py  --model_path model  --data_path tests/data --result_path training --format=h5
+```
+
+## Test:
+```
+python train.py --mode test  --model_path model  --data_path tests/data --result_path tmp --format=h5 --batch 0 --nt 2048
+```
+
+## Run CCTorch:
+```
+python run.py --data-list1=test_decompressed.txt --data-path=../decompressed --dt=0.04 --maxlag=30  --mode=AN  --block-size1 1300 --block-size2 1300 --fixed-channels 300 500 700 900  --log-interval 1 --result-path results_decompressed
+```
+
+## Install Python Packages
+```
+pip install imageio, pillow
+``` -->
+
+
+<!-- ## Experiments
 
 ## Ambient Noise
 
@@ -168,5 +235,5 @@ python ../CCTorch/run.py --pair-list=templates_raw/event_pair.txt  --data-path=t
 ### COMPRESSED
 ```
 python ../CCTorch/run.py --pair-list=templates_compressed/event_pair.txt  --data-path=templates_compressed/template.dat --data-format=memmap --config=templates_compressed/config.json  --batch-size=512  --result-path=templates_compressed/ccpairs
-```
+``` -->
 
