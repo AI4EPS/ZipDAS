@@ -13,7 +13,7 @@ pip install -r requirements.txt
 
 *Compression*
 ```
-python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=jpeg --save_preprocess --quality=80 --plot_figure
+python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=jpeg --quality=80 --plot_figure
 ```
 *Decompression:*
 ```
@@ -29,7 +29,7 @@ To use GPU acceleration, please follow this instruction: https://www.tensorflow.
 python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=neural  --model_path=model --batch_nt=10240  --plot_figure
 ```
 ```
-python run.py --mode decompress --data_path results/compressed_noise/neural --result_path results/neural/decompressed_noise --method=neural --model_path model --plot_figure
+python run.py --mode decompress --data_path results/compressed_noise/neural --result_path results/decompressed_noise --method=neural --model_path model --plot_figure
 ```
 
 *Training:*
@@ -61,10 +61,13 @@ python run.py --mode decompress --data_path results/compressed_noise/wavelet --r
 
 *Raw data:*
 ```
+basename noise_data/* > noise_data.txt
+```
+```
 python CCTorch/run.py --data_list1=noise_data.txt --data_path=noise_data  --mode=AN  --block_size1 1 --block_size2 100 --fixed_channels 100 300 500 700 900  --dt=0.02 --maxlag=15 --temporal_gradient --result_path results/cctorch_noise
 ```
 ```
-python CCTorch/tests/test_ambient_noise.py --result_path results/cctorch_noise --figure_path figures/cctorch_noise  --fixed_channels 100 300 500 700 900
+python CCTorch/scripts/plot_ambient_noise.py --result_path results/cctorch_noise --figure_path figures/cctorch_noise  --fixed_channels 100 300 500 700 900
 ```
 
 <!-- *Preprocess data*
@@ -72,15 +75,16 @@ python CCTorch/tests/test_ambient_noise.py --result_path results/cctorch_noise -
 python CCTorch/run.py --data_list1=noise_data.txt --data_path=results/compressed_noise/jpeg/preprocess  --mode=AN  --block_size1 1 --block_size2 100 --fixed_channels 100 300 500 700 900  --dt=0.02 --maxlag=15  --result_path results/cctorch_preprocess_noise
 ```
 ```
-python CCTorch/tests/test_ambient_noise.py --result_path results/cctorch_preprocess_noise --figure_path results/cctorch_preprocess_noise  --fixed_channels 100 300 500 700 900
+python CCTorch/scripts/plot_ambient_noise.py --result_path results/cctorch_preprocess_noise --figure_path results/cctorch_preprocess_noise  --fixed_channels 100 300 500 700 900
 ``` -->
 
 *Compressed data:*
 ```
-python CCTorch/run.py --data_list1=noise_data.txt --data_path=results/decompressed_noise/jpeg  --mode=AN  --block_size1 1 --block_size2 100 --fixed_channels 100 300 500 700 900  --dt=0.02 --maxlag=15  --result_path results/cctorch_decompressed_noise
+METHOD=jpeg
+python CCTorch/run.py --data_list1=noise_data.txt --data_path=results/decompressed_noise/$METHOD  --mode=AN  --block_size1 1 --block_size2 100 --fixed_channels 100 300 500 700 900  --dt=0.02 --maxlag=15  --result_path results/cctorch_decompressed_noise/$METHOD
 ```
 ```
-python CCTorch/tests/test_ambient_noise.py --result_path results/cctorch_decompressed_noise --figure_path figures/cctorch_decompressed_noise  --fixed_channels 100 300 500 700 900
+python CCTorch/scripts/plot_ambient_noise.py --result_path results/cctorch_decompressed_noise/$METHOD --figure_path results/cctorch_decompressed_noise/$METHOD/figures  --fixed_channels 100 300 500 700 900
 ```
 
 ## Optional: Install PyCurvelab for curvelet compression

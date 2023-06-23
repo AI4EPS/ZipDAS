@@ -34,3 +34,4 @@ tests/comp_curvelet/swig-4.1.1
 *.DS_Store
 results/*/*/*.json
 cctorch.log
+noise_data.txt
