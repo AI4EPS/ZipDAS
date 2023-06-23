@@ -28,7 +28,6 @@ tests/comp_curvelet/swig-4.1.1
 *.jpg
 *.j2k
 *.pkl
-*.txt
 *.npz
 *.json
 *.pdf

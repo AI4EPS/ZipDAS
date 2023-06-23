@@ -1,0 +1,10 @@
+matplotlib
+tqdm
+numpy
+h5py
+imageio
+pillow
+tensorflow-compression
+--index-url https://download.pytorch.org/whl/cpu
+torch
+
