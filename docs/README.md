@@ -11,9 +11,11 @@ pip install -r requirements.txt
 
 ### Compression using Wavelet (JPEG2000)
 
+*Compression*
 ```
 python run.py --mode compress --data_path noise_data --data_format h5 --result_path results/compressed_noise --method=jpeg --save_preprocess --quality=80 --plot_figure
 ```
+*Decompression:*
 ```
 python run.py --mode decompress --data_path results/compressed_noise/jpeg --result_path results/decompressed_noise --method=jpeg --plot_figure
 ```
