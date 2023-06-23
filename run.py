@@ -1,32 +1,27 @@
 ### put top to prevent segmentation fault
-import pyct
-import pywt
+try:
+    import pyct
+    import pywt
+except:
+    pass
 
 ###
 import argparse
-import io
 import json
-import math
 import os
 import pickle
-import re
 from collections import defaultdict
-from glob import glob
 from io import BytesIO
 from pathlib import Path
 from urllib.request import urlopen
 from zipfile import ZipFile
 
-import cv2
 import h5py
 import imageio.v3 as iio
 import matplotlib.pyplot as plt
 import numpy as np
 import PIL
 
-
-# import tensorflow as tf
-# import tensorflow_compression as tfc
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
@@ -113,13 +108,11 @@ def main(args):
 
     if args.mode == "compress":
 
-        if args.method == "Neual":
+        if args.method == "neural":
             if not os.path.exists(args.model_path):
                 model_url = "https://github.com/AI4EPS/models/releases/download/CompDAS-v2/model.zip"
                 download_and_unzip(args.model_path)
-            model = tf.keras.models.load_model(args.model_path)
-            dtypes = [t.dtype for t in model.decompress.input_signature]
-            compress_neural(args, model, dtypes)
+            compress_neural(args)
 
         elif args.method == "jpeg":
             compress_jpeg(args)
@@ -132,10 +125,11 @@ def main(args):
 
     elif args.mode == "decompress":
 
-        if args.method == "Neual":
-            model = tf.keras.models.load_model(args.model_path)
-            dtypes = [t.dtype for t in model.decompress.input_signature]
-            decompress_neural(args, model, dtypes)
+        if args.method == "neural":
+            if not os.path.exists(args.model_path):
+                model_url = "https://github.com/AI4EPS/models/releases/download/CompDAS-v2/model.zip"
+                download_and_unzip(args.model_path)
+            decompress_neural(args)
 
         elif args.method == "jpeg":
             decompress_jpeg(args)
@@ -422,72 +416,94 @@ def decompress_jpeg(args):
             f.create_dataset("data", data=data_list)
 
 
-def compress_neural(args, model, dtypes):
+def compress_neural(args):
+
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+    import tensorflow as tf
+    import tensorflow_compression as tfc
+
+    result_path = Path(args.result_path)
+    if args.plot_figure:
+        figure_path = Path(args.figure_path)
+    if args.save_preprocess:
+        preprocess_path = Path(args.preprocess_path) 
+
+    model = tf.keras.models.load_model(args.model_path)
+    dtypes = [t.dtype for t in model.decompress.input_signature]
 
     dataset = load_data(args)
-
-    nt = args.batch_window
-
     for meta in dataset:
-        data = meta["data"].unsqueeze(0)
+
         filename = meta["filename"]
+        basename = filename.split("/")[-1]
 
-        vectors = []
-        x_shape = []
-        y_shape = []
+        if not (result_path / basename).exists():
+            (result_path / basename).mkdir(parents=True)
 
-        data = tf.convert_to_tensor(data, dtype=tf.float32)
-        nc, h, w = data.shape
-        for i in tqdm(range(0, w, nt), desc=f"Compressing {filename.split('/')[-1]}"):
-            data_slice = data[:, :, i : i + nt]
+        if args.save_preprocess:
+            with h5py.File(preprocess_path / basename, "w") as f:
+                f.create_dataset("data", data=meta["data"])
+
+        nx, nt = meta["data"].shape
+        if "vmax_uint" in meta:
+            vmax_uint = meta["vmax_uint"]
+        else:
+            vmax_uint = 2**15 - 1
+
+        for i in tqdm(range(0, nt, args.batch_nt), desc=f"Compressing ({args.method}) {basename}"):
+
+            data = meta["data"][:, i : i + args.batch_nt]
 
             if args.plot_figure:
                 plot_result(
                     args,
-                    os.path.join(args.figure_path, filename.split("/")[-1] + f"_{i//nt:02d}.png"),
-                    np.transpose(data_slice, (1, 2, 0)),
+                    figure_path / f"{basename}_{i:06d}.png",
+                    data,
                 )
 
-            data_slice = tf.transpose(data_slice, perm=(1, 2, 0))
-            tensors = model.compress(data_slice)
-            vectors.append(tensors[0])
-            x_shape.append(tensors[1])
-            y_shape.append(tensors[2])
+            data = tf.convert_to_tensor(data, dtype=tf.float32)
+            data = tf.expand_dims(data, axis=-1)
+            data = tf.cast(data, tf.keras.mixed_precision.global_policy().compute_dtype)
 
-        vectors = tf.concat(vectors, axis=0)
-        x_shape = tf.concat(x_shape, axis=0)
-        y_shape = tf.concat(y_shape, axis=0)
-
-        packed = tfc.PackedTensors()
-        packed.pack((vectors, x_shape, y_shape))
-        with open(os.path.join(args.result_path, filename.split("/")[-1] + ".tfci"), "wb") as f:
-            f.write(packed.string)
+            tensors = model.compress(data)
+            packed = tfc.PackedTensors()
+            packed.pack(tensors)
+            with open((str(result_path / basename / f"{i:06d}") + ".tfci"), "wb") as f:
+                f.write(packed.string)
 
 
-def decompress_neural(args, model, dtypes):
+def decompress_neural(args):
 
-    files = sorted(list(glob(args.data_path + "/*.tfci")))
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+    import tensorflow as tf
+    import tensorflow_compression as tfc
 
-    for filename in files:
+    data_path = Path(args.data_path)
+    result_path = Path(args.result_path)
+    if args.plot_figure:
+        figure_path = Path(args.figure_path)
 
-        with open(filename, "rb") as f:
-            packed = tfc.PackedTensors(f.read())
+    model = tf.keras.models.load_model(args.model_path)
+    dtypes = [t.dtype for t in model.decompress.input_signature]
+        
+    for folder in data_path.glob(f"*.{args.data_format}"):
 
-        tensors = packed.unpack(dtypes)
+        data_list = []
+        for filename in tqdm(sorted(list(folder.glob("*.tfci"))), desc=f"Decompressing ({args.method}) {folder.name}"):
 
-        data = []
-        for i in tqdm(range(len(tensors[0])), desc=f"Decompressing {filename.split('/')[-1]}"):
-            x_hat = model.decompress(
-                tensors[0][i : i + 1], tensors[1][i * 2 : i * 2 + 2], tensors[2][i * 2 : i * 2 + 2]
-            )
+            with open(filename, "rb") as f:
+                packed = tfc.PackedTensors(f.read())
+            tensors = packed.unpack(dtypes)
+            data = model.decompress(*tensors).numpy().squeeze()
+
+            data_list.append(data)
 
             if args.plot_figure:
-                plot_result(args, os.path.join(args.figure_path, filename.split("/")[-1] + f"_{i:02d}.png"), x_hat)
+                plot_result(args, figure_path / f"{folder.name}_{filename.name}_{args.method}.png", data)
 
-            data.append(x_hat)
-
-        data = tf.concat(data, axis=1)[:, :, 0]
-        write_data(args, filename, data)
+        data_list = np.concatenate(data_list, axis=-1).astype(np.float32)
+        with h5py.File(result_path / folder.name, "w") as f:
+            f.create_dataset("data", data=data_list)
 
     return 0
 

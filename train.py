@@ -8,8 +8,8 @@ import tensorflow as tf
 import tensorflow_compression as tfc
 from tqdm import tqdm
 
-from compdas.data import *
-from compdas.model import *
+from zipdas.data import *
+from zipdas.model import *
 
 
 def parse_args():
@@ -65,13 +65,11 @@ def parse_args():
 
 def gen_dataset(args):
 
-    files = sorted(list(glob.glob(args.data_path + "/*." + args.format)))
-    if not files:
-        raise RuntimeError(f"No training images found with glob " f"'{args.data_path}'.")
-    for filename in files:
-        data = read_hdf5(args, filename)
-        data = torch.permute(data, (1, 2, 0))
-        h, w, nc = data.shape  # nx, nt, nc
+    for meta in load_data(args):
+        
+        data = meta["data"]
+        h, w = data.shape  # nx, nt
+
         if args.mode == "train":
             ih = np.random.randint(0, h - args.nx, h // args.nx * 50)
             iw = np.random.randint(0, w - args.nt, w // args.nt * 50)
@@ -80,7 +78,8 @@ def gen_dataset(args):
             iw = np.arange(0, w - args.nt, args.nt)
         for i in ih:
             for j in iw:
-                patch = tf.convert_to_tensor(data[i : i + args.nx, j : j + args.nt, :], dtype=tf.float32)
+                patch = tf.convert_to_tensor(data[i : i + args.nx, j : j + args.nt], dtype=tf.float32)
+                patch = tf.expand_dims(patch, axis=-1)
                 yield tf.cast(patch, tf.keras.mixed_precision.global_policy().compute_dtype)
 
 
@@ -125,15 +124,16 @@ def test(args):
     if not os.path.exists(args.result_path + "/figures"):
         os.makedirs(args.result_path + "/figures")
 
-    print(f"Loading model from: {args.model_path}")
     try:
         model = tf.keras.models.load_model(args.model_path)
+        print(f"Loaded model: {args.model_path}")
     except:
         model = BLS2017Model(args.lmbda, args.num_filters)
         optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
         checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=model)
         status = checkpoint.restore(tf.train.latest_checkpoint(args.model_path))
-        print(f"Restored from checkpoint {args.model_path}: {status}")
+        print(f"Restored checkpoint: {args.model_path}: {status}")
+    print("Using model:", model)
     test_dataset = data_loader(args, "test")
 
     for i, x in enumerate(test_dataset):
@@ -229,6 +229,7 @@ def train(args):
 
 
 def main(args):
+    print(f"args: {args}")
     if args.mode == "train":
         train(args)
     elif args.mode == "test":

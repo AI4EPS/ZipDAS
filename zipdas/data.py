@@ -321,7 +321,7 @@ def load_data(args):
         # plt.savefig(f"debug_percentile2_{type}.pdf", dpi=300, bbox_inches="tight")
 
         # data_raw = meta["data"][:,idx0:idx1].copy()
-        meta = equalize_hist(args, meta)
+        # meta = equalize_hist(args, meta)
         # data = meta["data"][:,idx0:idx1].copy().astype(np.float32)
 
         # fig, axes = plt.subplots(3, 1, squeeze=False, figsize=(10, 8.5), gridspec_kw={"height_ratios": [1, 1, 1]})

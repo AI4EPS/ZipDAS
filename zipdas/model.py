@@ -37,7 +37,6 @@ from absl import app
 from absl.flags import argparse_flags
 import tensorflow as tf
 import tensorflow_compression as tfc
-import tensorflow_datasets as tfds
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -260,19 +259,6 @@ def crop_image(image, patchsize):
   image = tf.image.random_crop(image, (patchsize, patchsize, 1))
   return tf.cast(image, tf.keras.mixed_precision.global_policy().compute_dtype)
 
-
-def get_dataset(name, split, args):
-  """Creates input data pipeline from a TF Datasets dataset."""
-  with tf.device("/cpu:0"):
-    dataset = tfds.load(name, split=split, shuffle_files=True)
-    if split == "train":
-      dataset = dataset.repeat()
-    dataset = dataset.filter(
-        lambda x: check_image_size(x["image"], args.patchsize))
-    dataset = dataset.map(
-        lambda x: crop_image(x["image"], args.patchsize))
-    dataset = dataset.batch(args.batchsize, drop_remainder=True)
-  return dataset
 
 
 def get_custom_dataset(split, args):
