@@ -255,6 +255,7 @@ qualities = [1, 2, 4, 7, 10, 20, 40, 80]
 data_types = ["noise"]
 methods = ["jpeg", "wavelet", "curvelet", "neural"]
 methods = ["jpeg", "neural"]
+methods = ["jpeg"]
 ncpu = 1
 calculate_metrics = False
 
@@ -363,7 +364,7 @@ for data_type in data_types:
             metrics_cc[f"{method}"] = [x, y]
 
 # %%
-fig, axs = plt.subplots(2, 2, figsize=(10, 8), sharex=True)
+fig, axs = plt.subplots(2, 2, figsize=(8, 6), sharex=True)
 
 for i, method in enumerate(methods):
     axs[0, 0].scatter(metrics[method][0], [y[2] for y in metrics[method][1]], c=f"C{i}", label=method.upper())
@@ -409,29 +410,29 @@ fig.savefig("results/metrics.pdf", dpi=300, bbox_inches="tight")
 
 
 # %%
-fig, axs = plt.subplots(2, 2, figsize=(10, 8), sharex=True)
+fig, axs = plt.subplots(2, 2, figsize=(8, 6), sharex=True)
 
 for i, method in enumerate(methods):
-    axs[0, 0].scatter(metrics_cc[method][0], [y[2] for y in metrics_cc[method][1]], c=f"C{i}", label=method.upper())
-    axs[0, 0].plot(metrics_cc[method][0], [y[2] for y in metrics_cc[method][1]], c=f"C{i}")
+    axs[0, 0].scatter(metrics_cc[method][0], [y[2] for y in metrics_cc[method][1]], s=20, c=f"C{i}", label=method.upper())
+    axs[0, 0].plot(metrics_cc[method][0], [y[2] for y in metrics_cc[method][1]], c=f"C{i}", linestyle="--", linewidth=1.0)
     axs[0, 0].set_xlabel("Compression rate")
     axs[0, 0].set_ylabel("RMSD")
     axs[0, 0].grid(True, linestyle='--', linewidth=0.5, alpha=0.5)
 
-    axs[0, 1].scatter(metrics_cc[method][0], [y[3] for y in metrics_cc[method][1]], c=f"C{i}", label=method.upper())
-    axs[0, 1].plot(metrics_cc[method][0], [y[3] for y in metrics_cc[method][1]], c=f"C{i}")
+    axs[0, 1].scatter(metrics_cc[method][0], [y[3] for y in metrics_cc[method][1]], s=20, c=f"C{i}", label=method.upper())
+    axs[0, 1].plot(metrics_cc[method][0], [y[3] for y in metrics_cc[method][1]], c=f"C{i}", linestyle="--", linewidth=1.0)
     axs[0, 1].set_xlabel("Compression rate")
     axs[0, 1].set_ylabel("PSNR")
     axs[0, 1].grid(True, linestyle='--', linewidth=0.5, alpha=0.5)
 
-    axs[1, 0].scatter(metrics_cc[method][0], [y[4] for y in metrics_cc[method][1]], c=f"C{i}", label=method.upper())
-    axs[1, 0].plot(metrics_cc[method][0], [y[4] for y in metrics_cc[method][1]], c=f"C{i}")
+    axs[1, 0].scatter(metrics_cc[method][0], [y[4] for y in metrics_cc[method][1]], s=20, c=f"C{i}", label=method.upper())
+    axs[1, 0].plot(metrics_cc[method][0], [y[4] for y in metrics_cc[method][1]], c=f"C{i}", linestyle="--", linewidth=1.0)
     axs[1, 0].set_xlabel("Compression rate")
     axs[1, 0].set_ylabel("Cross-correlation")
     axs[1, 0].grid(True, linestyle='--', linewidth=0.5, alpha=0.5)
 
-    axs[1, 1].scatter(metrics_cc[method][0], [y[5] for y in metrics_cc[method][1]], c=f"C{i}", label=method.upper())
-    axs[1, 1].plot(metrics_cc[method][0], [y[5] for y in metrics_cc[method][1]], c=f"C{i}")
+    axs[1, 1].scatter(metrics_cc[method][0], [y[5] for y in metrics_cc[method][1]], s=20, c=f"C{i}", label=method.upper())
+    axs[1, 1].plot(metrics_cc[method][0], [y[5] for y in metrics_cc[method][1]], c=f"C{i}", linestyle="--", linewidth=1.0)
     axs[1, 1].set_xlabel("Compression rate")
     axs[1, 1].set_ylabel("SSIM")
     axs[1, 1].grid(True, linestyle='--', linewidth=0.5, alpha=0.5)
