@@ -246,10 +246,10 @@ def decompress(args):
         with open(str(folder) + ".pkl", "rb") as f:
             norm_dict = pickle.load(f)
             config = norm_dict["config"]
-            std = norm_dict["norm"]
-            mean = norm_dict["mean"]
             vmax_uint = norm_dict["vmax_uint"]
             if args.recover_amplitude:
+                std = norm_dict["norm"]
+                mean = norm_dict["mean"]
                 scale_factor = norm_dict["scale_factor"]
                 mean_interp = F.interpolate(
                     torch.from_numpy(mean), scale_factor=scale_factor, align_corners=False, mode="bilinear"
@@ -335,15 +335,15 @@ def compress_jpeg(args):
 
             data = meta["data"][:, i : i + args.batch_nt]
 
-            data = (data / vmax_abs) * vmax_uint + vmax_uint
-            data_uint = data.astype(np.uint16)
-
             if args.plot_figure:
                 plot_result(
                     args,
                     figure_path / f"{basename}_{i:06d}.png",
-                    data_uint,
+                    data,
                 )
+
+            data = (data / vmax_abs) * vmax_uint + vmax_uint
+            data_uint = data.astype(np.uint16)
 
             iio.imwrite(
                 result_path / basename / f"{i:06d}.j2k",
@@ -381,11 +381,11 @@ def decompress_jpeg(args):
 
         with open(str(folder) + ".pkl", "rb") as f:
             norm_dict = pickle.load(f)
-            std = norm_dict["norm"]
-            mean = norm_dict["mean"]
-            vmax_uint = norm_dict["vmax_uint"]
             vmax_abs = norm_dict["vmax_abs"]
+            vmax_uint = norm_dict["vmax_uint"]
             if args.recover_amplitude:
+                std = norm_dict["norm"]
+                mean = norm_dict["mean"]
                 scale_factor = norm_dict["scale_factor"]
                 mean_interp = F.interpolate(
                     torch.from_numpy(mean), scale_factor=scale_factor, align_corners=False, mode="bilinear"
@@ -401,14 +401,14 @@ def decompress_jpeg(args):
         for filename in tqdm(sorted(list(folder.glob("*.j2k"))), desc=f"Decompressing (JPEG) {folder.name}"):
 
             data = iio.imread(filename, plugin="pillow", extension=".j2k")
-
+            data = data.astype(np.float32)
+            data = (data - vmax_uint) / vmax_uint * vmax_abs
             data_list.append(data)
 
             if args.plot_figure:
                 plot_result(args, figure_path / f"{folder.name}_{filename.name}_{args.method}.png", data)
 
-        data_list = np.concatenate(data_list, axis=-1).astype(np.float32)
-        data_list = (data_list - vmax_uint) / vmax_uint * vmax_abs
+        data_list = np.concatenate(data_list, axis=-1)
         if args.recover_amplitude:
             nx_, nt_ = data_list.shape
             data_list = data_list * std_interp[:nx_, :nt_] + mean_interp[:nx_, :nt_]
@@ -429,7 +429,6 @@ def compress_neural(args):
         preprocess_path = Path(args.preprocess_path) 
 
     model = tf.keras.models.load_model(args.model_path)
-    dtypes = [t.dtype for t in model.decompress.input_signature]
 
     dataset = load_data(args)
     for meta in dataset:
@@ -445,10 +444,6 @@ def compress_neural(args):
                 f.create_dataset("data", data=meta["data"])
 
         nx, nt = meta["data"].shape
-        if "vmax_uint" in meta:
-            vmax_uint = meta["vmax_uint"]
-        else:
-            vmax_uint = 2**15 - 1
 
         for i in tqdm(range(0, nt, args.batch_nt), desc=f"Compressing ({args.method}) {basename}"):
 
@@ -471,6 +466,12 @@ def compress_neural(args):
             with open((str(result_path / basename / f"{i:06d}") + ".tfci"), "wb") as f:
                 f.write(packed.string)
 
+        with open((str(result_path / basename) + ".pkl"), "wb") as f:
+            tmp = {"mean": meta["mean"], "norm": meta["norm"]}
+            if "scale_factor" in meta:
+                tmp["scale_factor"] = meta["scale_factor"]
+            pickle.dump(tmp, f)
+
 
 def decompress_neural(args):
 
@@ -488,6 +489,22 @@ def decompress_neural(args):
         
     for folder in data_path.glob(f"*.{args.data_format}"):
 
+        with open(str(folder) + ".pkl", "rb") as f:
+            norm_dict = pickle.load(f)
+            if args.recover_amplitude:
+                mean = norm_dict["mean"]
+                std = norm_dict["norm"]
+                scale_factor = norm_dict["scale_factor"]
+                mean_interp = F.interpolate(
+                    torch.from_numpy(mean), scale_factor=scale_factor, align_corners=False, mode="bilinear"
+                ).numpy()
+                std_interp = F.interpolate(
+                    torch.from_numpy(std), scale_factor=scale_factor, align_corners=False, mode="bilinear"
+                ).numpy()
+                std_interp[std_interp == 0] = 1
+                mean_interp = np.squeeze(mean_interp)
+                std_interp = np.squeeze(std_interp)
+
         data_list = []
         for filename in tqdm(sorted(list(folder.glob("*.tfci"))), desc=f"Decompressing ({args.method}) {folder.name}"):
 
@@ -502,6 +519,9 @@ def decompress_neural(args):
                 plot_result(args, figure_path / f"{folder.name}_{filename.name}_{args.method}.png", data)
 
         data_list = np.concatenate(data_list, axis=-1).astype(np.float32)
+        if args.recover_amplitude:
+            nx_, nt_ = data_list.shape
+            data_list = data_list * std_interp[:nx_, :nt_] + mean_interp[:nx_, :nt_]
         with h5py.File(result_path / folder.name, "w") as f:
             f.create_dataset("data", data=data_list)
 

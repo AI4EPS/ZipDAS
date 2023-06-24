@@ -19,14 +19,14 @@ def parse_args():
     # High-level options.
     parser.add_argument("--mode", type=str, default="train", help="train")
     parser.add_argument("--model_path", default="model", help="Path where to save/load the trained model.")
-    parser.add_argument("--lambda", type=float, default=30.0, dest="lmbda", help="Lambda for rate-distortion tradeoff.")
+    parser.add_argument("--lambda", type=float, default=100, dest="lmbda", help="Lambda for rate-distortion tradeoff.")
     parser.add_argument("--num_filters", type=int, default=128, help="Number of filters per layer.")
 
     parser.add_argument("--data_path", type=str, default="data", help="data path")
     parser.add_argument("--result_path", type=str, default="results", help="result path")
     parser.add_argument("--format", type=str, default="h5", help="data format")
-    parser.add_argument("--nx", type=int, default=512, help="path size for height (spatial axis)")
-    parser.add_argument("--nt", type=int, default=512, help="path size for width (temporal axis)")
+    parser.add_argument("--nx", type=int, default=1024, help="path size for height (spatial axis)")
+    parser.add_argument("--nt", type=int, default=1024, help="path size for width (temporal axis)")
 
     parser.add_argument(
         "--log_path",
@@ -43,7 +43,7 @@ def parse_args():
         "over the full training dataset.)",
     )
     parser.add_argument(
-        "--steps_per_epoch", type=int, default=1000, help="Perform validation and produce logs after this many batches."
+        "--steps_per_epoch", type=int, default=100, help="Perform validation and produce logs after this many batches."
     )
     parser.add_argument(
         "--max_validation_steps",
@@ -69,15 +69,21 @@ def gen_dataset(args):
         
         data = meta["data"]
         h, w = data.shape  # nx, nt
+        patch = np.zeros((args.nx, args.nt), dtype=np.float32)
 
         if args.mode == "train":
             ih = np.random.randint(0, h - args.nx, h // args.nx * 50)
             iw = np.random.randint(0, w - args.nt, w // args.nt * 50)
+            # ih = np.random.randint(0, h, h // args.nx * 50)
+            # iw = np.random.randint(0, w, w // args.nt * 50)
         else:
             ih = np.arange(0, h - args.nx, args.nx)
             iw = np.arange(0, w - args.nt, args.nt)
         for i in ih:
             for j in iw:
+                # patch[:, :] = data[i : i + args.nx, j : j + args.nt]
+                # patch[: tmp.shape[0], : tmp.shape[1]] = tmp[:, :]
+                # patch = tf.convert_to_tensor(patch, dtype=tf.float32)
                 patch = tf.convert_to_tensor(data[i : i + args.nx, j : j + args.nt], dtype=tf.float32)
                 patch = tf.expand_dims(patch, axis=-1)
                 yield tf.cast(patch, tf.keras.mixed_precision.global_policy().compute_dtype)
@@ -212,14 +218,14 @@ def train(args):
             # CustomCallback(),
             tf.keras.callbacks.TerminateOnNaN(),
             tf.keras.callbacks.TensorBoard(log_dir=args.log_path, histogram_freq=1, update_freq="epoch"),
-            # tf.keras.callbacks.BackupAndRestore(args.log_path),
-            # tf.keras.callbacks.ModelCheckpoint(
-            #     args.model_path + "/checkpoint/variables",
-            #     monitor="val_mse",
-            #     save_best_only=False,
-            #     save_weights_only=False,
-            #     verbose=1,
-            # ),
+            tf.keras.callbacks.BackupAndRestore(args.log_path),
+            tf.keras.callbacks.ModelCheckpoint(
+                args.model_path + "/checkpoint/variables",
+                monitor="val_mse",
+                save_best_only=False,
+                save_weights_only=True,
+                verbose=1,
+            ),
         ],
         verbose=1,
     )
